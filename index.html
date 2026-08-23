@@ -1,0 +1,1454 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#12131A">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="復習キュー">
+<meta name="description" content="各アプリに散らばった学習項目を1本のキューにまとめ、忘れそうな頃に複数のモードで出題する。">
+<link rel="manifest" href="manifest.webmanifest">
+<title>復習キュー</title>
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+:root{
+  --bg:#12131A; --panel:#1B1D26; --panel2:#22242F; --line:#2E3140;
+  --tx:#F2F3F7; --dim:#9BA1B4; --acc:#FF7A18; --acc2:#FF3E8A;
+  --ok:#00B87C; --warn:#F2B705; --bad:#E63946; --cool:#00C2FF;
+}
+html,body{margin:0;padding:0}
+body{
+  background:var(--bg); color:var(--tx); min-height:100vh;
+  font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans",system-ui,sans-serif;
+  font-size:16px; line-height:1.6;
+  padding-bottom:env(safe-area-inset-bottom);
+}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+input,select,textarea{font:inherit;color:inherit}
+
+/* ---------- header ---------- */
+.hd{position:sticky;top:0;z-index:20;background:rgba(18,19,26,.94);
+    backdrop-filter:saturate(160%) blur(12px);border-bottom:1px solid var(--line);
+    padding-top:env(safe-area-inset-top)}
+.hd-row{display:flex;align-items:center;gap:10px;padding:10px 14px 6px}
+.hd h1{margin:0;font-size:17px;letter-spacing:.02em;flex:1}
+.hd h1 b{color:var(--acc)}
+.icon-btn{width:38px;height:38px;border-radius:11px;background:var(--panel2);
+          display:grid;place-items:center;font-size:16px;border:1px solid var(--line)}
+.icon-btn:active{transform:scale(.94)}
+.icon-btn[data-busy="1"]{opacity:.5}
+.tabs{display:flex;gap:4px;padding:0 10px 8px}
+.tabs button{flex:1;padding:8px 4px;border-radius:10px;font-size:13.5px;color:var(--dim);
+             font-weight:600}
+.tabs button.on{background:var(--panel2);color:var(--tx)}
+.tabs button .n{font-size:11px;color:var(--acc);margin-left:4px}
+
+main{max-width:640px;margin:0 auto;padding:14px}
+
+/* ---------- card ---------- */
+.card{background:var(--panel);border:1px solid var(--line);border-radius:18px;
+      padding:18px 16px;margin-bottom:14px}
+.card-meta{display:flex;align-items:center;gap:8px;margin-bottom:14px;flex-wrap:wrap}
+.chip{font-size:11px;font-weight:700;padding:3px 9px;border-radius:99px;
+      background:var(--panel2);color:var(--dim);border:1px solid var(--line)}
+.chip.src{color:var(--acc);border-color:rgba(255,122,24,.35)}
+.chip.mode{color:var(--cool);border-color:rgba(0,194,255,.3)}
+.chip.new{color:var(--ok);border-color:rgba(0,184,124,.35)}
+.prompt{font-size:26px;line-height:1.4;font-weight:600;min-height:64px;
+        display:flex;align-items:center;word-break:break-word}
+.prompt.en{font-size:23px}
+.prompt .hint{font-size:14px;color:var(--dim);font-weight:400;margin-top:6px}
+.speak-big{width:100%;padding:26px;border-radius:16px;background:var(--panel2);
+           border:1px dashed var(--line);font-size:36px;text-align:center}
+.speak-big:active{background:#282b38}
+.speak-big small{display:block;font-size:12px;color:var(--dim);margin-top:8px}
+.answer{border-top:1px solid var(--line);margin-top:16px;padding-top:14px}
+.answer .main{font-size:22px;font-weight:600;line-height:1.45;word-break:break-word}
+.answer .sub{font-size:16px;color:var(--dim);margin-top:6px}
+.answer .ex{margin-top:12px;padding:10px 12px;background:var(--panel2);
+            border-radius:11px;font-size:14.5px;line-height:1.55}
+.answer .ex .ja{color:var(--dim);display:block;margin-top:2px}
+.answer .note{margin-top:10px;font-size:13.5px;color:var(--dim);line-height:1.6}
+.row-play{display:flex;gap:8px;margin-top:12px;align-items:center}
+.mini{padding:7px 13px;border-radius:10px;background:var(--panel2);
+      border:1px solid var(--line);font-size:13px;font-weight:600}
+.mini:active{transform:scale(.96)}
+.btn-wide{width:100%;padding:15px;border-radius:14px;background:var(--acc);color:#12131A;
+          font-weight:800;font-size:16px;margin-top:16px}
+.btn-wide:active{transform:scale(.985)}
+.grades{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin-top:16px}
+.grades button{padding:13px 2px;border-radius:12px;font-size:12.5px;font-weight:700;
+               background:var(--panel2);border:1px solid var(--line);line-height:1.3}
+.grades button b{display:block;font-size:14px;margin-bottom:3px}
+.grades button small{display:block;font-size:10px;color:var(--dim);font-weight:600;margin-top:3px}
+.grades button[data-g="0"]{color:var(--bad);border-color:rgba(230,57,70,.4)}
+.grades button[data-g="1"]{color:var(--warn);border-color:rgba(242,183,5,.35)}
+.grades button[data-g="2"]{color:var(--ok);border-color:rgba(0,184,124,.4)}
+.grades button[data-g="3"]{color:var(--cool);border-color:rgba(0,194,255,.35)}
+.grades button:active{transform:scale(.96)}
+
+.gloss{margin-top:12px}
+.gloss label{display:block;font-size:12px;color:var(--dim);margin-bottom:5px}
+.gloss input{width:100%;padding:11px 12px;border-radius:11px;background:var(--panel2);
+             border:1px solid var(--line);font-size:15px}
+.gloss input:focus{outline:none;border-color:var(--acc)}
+
+/* ---------- progress ---------- */
+.bar{height:5px;border-radius:99px;background:var(--panel2);overflow:hidden;margin-bottom:14px}
+.bar i{display:block;height:100%;background:linear-gradient(90deg,var(--acc),var(--acc2));
+       width:0;transition:width .28s}
+.counts{display:flex;gap:14px;font-size:12.5px;color:var(--dim);margin-bottom:12px}
+.counts b{color:var(--tx)}
+
+/* ---------- empty / done ---------- */
+.empty{text-align:center;padding:52px 20px;color:var(--dim)}
+.empty .big{font-size:44px;margin-bottom:14px}
+.empty h2{color:var(--tx);font-size:19px;margin:0 0 8px}
+.empty p{margin:0 0 6px;font-size:14px;line-height:1.7}
+
+/* ---------- list ---------- */
+.srcgrid{display:grid;grid-template-columns:repeat(2,1fr);gap:9px;margin-bottom:16px}
+.srccard{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px}
+.srccard .n{font-size:24px;font-weight:800;color:var(--acc)}
+.srccard .l{font-size:12px;color:var(--dim);margin-top:2px}
+.srccard .d{font-size:11px;color:var(--dim);margin-top:5px;opacity:.75}
+.item{background:var(--panel);border:1px solid var(--line);border-radius:13px;
+      padding:11px 13px;margin-bottom:8px}
+.item .t{font-size:15px;font-weight:600;word-break:break-word}
+.item .s{font-size:13px;color:var(--dim);margin-top:3px;word-break:break-word}
+.item .m{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center}
+.tag{font-size:10.5px;padding:2px 7px;border-radius:99px;background:var(--panel2);
+     color:var(--dim);border:1px solid var(--line)}
+.tag.due{color:var(--acc);border-color:rgba(255,122,24,.35)}
+.filters{display:flex;gap:6px;margin-bottom:12px;overflow-x:auto;padding-bottom:4px}
+.filters button{padding:6px 12px;border-radius:99px;font-size:12.5px;white-space:nowrap;
+                background:var(--panel2);border:1px solid var(--line);color:var(--dim);font-weight:600}
+.filters button.on{background:var(--acc);color:#12131A;border-color:var(--acc)}
+.search{width:100%;padding:11px 13px;border-radius:12px;background:var(--panel);
+        border:1px solid var(--line);font-size:15px;margin-bottom:12px}
+.search:focus{outline:none;border-color:var(--acc)}
+
+/* ---------- stats ---------- */
+.statrow{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin-bottom:16px}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+      padding:13px;text-align:center}
+.stat .n{font-size:25px;font-weight:800}
+.stat .l{font-size:11px;color:var(--dim);margin-top:2px}
+.spark{display:flex;align-items:flex-end;gap:3px;height:74px;background:var(--panel);
+       border:1px solid var(--line);border-radius:14px;padding:11px}
+.spark i{flex:1;background:var(--panel2);border-radius:3px 3px 0 0;min-height:2px;position:relative}
+.spark i[data-v="1"]{background:linear-gradient(180deg,var(--acc),var(--acc2))}
+.fc{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    padding:13px;margin-top:12px}
+.fc h3{margin:0 0 10px;font-size:13px;color:var(--dim);font-weight:700}
+.fcrow{display:flex;align-items:center;gap:9px;font-size:13px;margin-bottom:7px}
+.fcrow .d{width:62px;color:var(--dim);font-size:12px;flex:none}
+.fcrow .b{flex:1;height:16px;background:var(--panel2);border-radius:4px;overflow:hidden}
+.fcrow .b i{display:block;height:100%;background:var(--acc);border-radius:4px}
+.fcrow .v{width:34px;text-align:right;color:var(--dim);font-size:12px;flex:none}
+
+/* ---------- sheet ---------- */
+.scrim{position:fixed;inset:0;background:rgba(0,0,0,.62);z-index:60;display:none;
+       align-items:flex-end;justify-content:center}
+.scrim.on{display:flex}
+.sheet{background:var(--panel);width:100%;max-width:640px;border-radius:20px 20px 0 0;
+       max-height:88vh;overflow:auto;padding:18px 16px calc(26px + env(safe-area-inset-bottom))}
+.sheet h2{margin:0 0 16px;font-size:17px}
+.fld{margin-bottom:16px}
+.fld > label{display:block;font-size:12.5px;color:var(--dim);margin-bottom:7px;font-weight:600}
+.fld input[type=number],.fld select{width:100%;padding:11px 12px;border-radius:11px;
+       background:var(--panel2);border:1px solid var(--line);font-size:15px}
+.fld input:focus,.fld select:focus{outline:none;border-color:var(--acc)}
+.toggles{display:flex;flex-direction:column;gap:8px}
+.tg{display:flex;align-items:center;gap:11px;padding:11px 12px;background:var(--panel2);
+    border:1px solid var(--line);border-radius:12px}
+.tg input{width:19px;height:19px;accent-color:var(--acc);flex:none}
+.tg .tx{flex:1;min-width:0}
+.tg .tx b{display:block;font-size:14.5px;font-weight:600}
+.tg .tx small{display:block;font-size:11.5px;color:var(--dim);line-height:1.5;margin-top:1px}
+.tg .cnt{font-size:12px;color:var(--acc);font-weight:700;flex:none}
+.sheet-btns{display:flex;gap:9px;margin-top:8px}
+.sheet-btns button{flex:1;padding:13px;border-radius:12px;font-weight:700;font-size:15px}
+.b-pri{background:var(--acc);color:#12131A}
+.b-sec{background:var(--panel2);border:1px solid var(--line)}
+.note-box{background:var(--panel2);border:1px solid var(--line);border-radius:12px;
+          padding:12px;font-size:12.5px;color:var(--dim);line-height:1.7;margin-bottom:16px}
+.note-box b{color:var(--warn)}
+
+/* ---------- toast ---------- */
+#toast{position:fixed;left:50%;bottom:calc(26px + env(safe-area-inset-bottom));
+       transform:translateX(-50%) translateY(20px);background:#000;color:#fff;
+       padding:11px 20px;border-radius:99px;font-size:13.5px;opacity:0;
+       transition:.24s;pointer-events:none;z-index:99;max-width:88vw;text-align:center}
+#toast.on{opacity:.96;transform:translateX(-50%) translateY(0)}
+.hidden{display:none !important}
+</style>
+</head>
+<body>
+
+<header class="hd">
+  <div class="hd-row">
+    <h1>復習<b>キュー</b></h1>
+    <button class="icon-btn" id="btnPull" title="各アプリから取り込む">⟳</button>
+    <button class="icon-btn" id="btnCfg" title="設定">⚙</button>
+  </div>
+  <nav class="tabs" id="tabs">
+    <button data-v="today" class="on">今日<span class="n" id="tabN"></span></button>
+    <button data-v="list">一覧</button>
+    <button data-v="stats">記録</button>
+  </nav>
+</header>
+
+<main>
+  <section id="v-today"></section>
+  <section id="v-list" class="hidden"></section>
+  <section id="v-stats" class="hidden"></section>
+</main>
+
+<div class="scrim" id="cfgScrim">
+  <div class="sheet" id="cfgSheet"></div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+"use strict";
+/* ==========================================================================
+   復習キュー — 各アプリに散らばった学習項目を1本のキューにまとめて出題する。
+
+   前提: どのアプリも https://cee-stars.github.io/ のパス違いに置かれている。
+   localStorage も IndexedDB もオリジン単位なので、ここから素通しで読める。
+   読むだけで、元のアプリのデータは絶対に書き換えない。
+   ========================================================================== */
+
+/* ---------- 小道具 ---------- */
+var $ = function(s){ return document.querySelector(s); };
+var TODAY = function(){ var d = new Date(); d.setHours(0,0,0,0); return d.getTime(); };
+var DAY = 86400000;
+function esc(s){
+  return String(s == null ? "" : s).replace(/[&<>"']/g, function(c){
+    return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];
+  });
+}
+function trim(s){ return typeof s === "string" ? s.trim() : ""; }
+function hasJa(s){ return /[぀-ヿ㐀-鿿ｦ-ﾝ]/.test(String(s||"")); }
+function toast(msg){
+  var t = $("#toast"); t.textContent = msg; t.classList.add("on");
+  clearTimeout(toast._t); toast._t = setTimeout(function(){ t.classList.remove("on"); }, 2100);
+}
+/* 瞬間英作文と同じ hash。同じ文から同じ id が出ないと ★ が引けない */
+function hashString(s){
+  var h = 5381, i;
+  for (i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(36);
+}
+function shuffle(a){
+  for (var i = a.length - 1; i > 0; i--){
+    var j = Math.floor(Math.random() * (i + 1)), t = a[i]; a[i] = a[j]; a[j] = t;
+  }
+  return a;
+}
+
+/* ---------- 設定 ---------- */
+var CFG_KEY = "revq.settings.v1";
+var DEFAULTS = {
+  newPerDay: 10,
+  maxPerDay: 60,
+  sources: { mydict:true, sunkan:true, bookshelf:true, grammar:true },
+  modes:   { listen:true, produce:true, recognize:true },
+  rate: 0.95,
+  autoPull: true,
+  autoSpeak: true
+};
+var CFG = load_cfg();
+function load_cfg(){
+  var c = JSON.parse(JSON.stringify(DEFAULTS));
+  try{
+    var raw = JSON.parse(localStorage.getItem(CFG_KEY) || "{}");
+    if (raw && typeof raw === "object"){
+      if (isFinite(raw.newPerDay)) c.newPerDay = Math.max(0, Math.min(200, raw.newPerDay|0));
+      if (isFinite(raw.maxPerDay)) c.maxPerDay = Math.max(1, Math.min(500, raw.maxPerDay|0));
+      if (isFinite(raw.rate))      c.rate = Math.max(.5, Math.min(1.5, +raw.rate));
+      ["sources","modes"].forEach(function(k){
+        if (raw[k] && typeof raw[k] === "object"){
+          Object.keys(c[k]).forEach(function(n){
+            if (typeof raw[k][n] === "boolean") c[k][n] = raw[k][n];
+          });
+        }
+      });
+      if (typeof raw.autoPull === "boolean")  c.autoPull  = raw.autoPull;
+      if (typeof raw.autoSpeak === "boolean") c.autoSpeak = raw.autoSpeak;
+    }
+  }catch(e){}
+  return c;
+}
+function save_cfg(){ try{ localStorage.setItem(CFG_KEY, JSON.stringify(CFG)); }catch(e){} }
+
+/* ---------- 保存 (このアプリ専用の IndexedDB) ----------
+   元のアプリの入れ物には一切触らない。こちらの都合はこちらで持つ。 */
+var DB = (function(){
+  var p = null;
+  function open(){
+    if (p) return p;
+    p = new Promise(function(res, rej){
+      var r = indexedDB.open("revq", 1);
+      r.onupgradeneeded = function(){
+        var db = r.result;
+        if (!db.objectStoreNames.contains("cards")) db.createObjectStore("cards", {keyPath:"uid"});
+        if (!db.objectStoreNames.contains("srs"))   db.createObjectStore("srs",   {keyPath:"key"});
+        if (!db.objectStoreNames.contains("log"))   db.createObjectStore("log",   {keyPath:"ts"});
+      };
+      r.onsuccess = function(){ res(r.result); };
+      r.onerror = function(){ rej(r.error); };
+    });
+    return p;
+  }
+  function tx(store, mode, fn){
+    return open().then(function(db){
+      return new Promise(function(res, rej){
+        var t = db.transaction(store, mode), s = t.objectStore(store), req = fn(s);
+        t.oncomplete = function(){ res(req && req.result); };
+        t.onerror = function(){ rej(t.error); };
+      });
+    });
+  }
+  return {
+    all:  function(st){ return tx(st, "readonly",  function(s){ return s.getAll(); }); },
+    put:  function(st, v){ return tx(st, "readwrite", function(s){ return s.put(v); }); },
+    putAll: function(st, arr){
+      return tx(st, "readwrite", function(s){ arr.forEach(function(v){ s.put(v); }); return null; });
+    },
+    del:  function(st, k){ return tx(st, "readwrite", function(s){ return s.delete(k); }); },
+    clear:function(st){ return tx(st, "readwrite", function(s){ return s.clear(); }); }
+  };
+})();
+
+/* ---------- 間隔反復 (SM-2 を刈り込んだもの) ----------
+   狙いは「そろそろ忘れる頃」に出すこと。厳密な再現率より、
+   まちがえた札がすぐ戻ってくることを優先する。 */
+var EASE_MIN = 1.3, EASE_MAX = 3.0;
+function newSrs(uid, mode){
+  return { key: uid + "|" + mode, uid: uid, mode: mode,
+           due: 0, interval: 0, ease: 2.5, reps: 0, lapses: 0, last: 0 };
+}
+function schedule(s, grade){
+  var t = TODAY();
+  if (grade === 0){
+    /* 落とした札は間隔をたたんで、その日のうちにもう一度出す */
+    s.lapses++; s.reps = 0; s.interval = 0;
+    s.ease = Math.max(EASE_MIN, s.ease - 0.2);
+    s.due = t;
+  } else if (grade === 1){
+    s.ease = Math.max(EASE_MIN, s.ease - 0.15);
+    s.interval = s.reps === 0 ? 1 : Math.max(1, Math.round(s.interval * 1.2));
+    s.reps++; s.due = t + s.interval * DAY;
+  } else if (grade === 2){
+    s.interval = s.reps === 0 ? 1 : (s.reps === 1 ? 3 : Math.max(1, Math.round(s.interval * s.ease)));
+    s.reps++; s.due = t + s.interval * DAY;
+  } else {
+    s.ease = Math.min(EASE_MAX, s.ease + 0.15);
+    s.interval = s.reps === 0 ? 3 : Math.max(1, Math.round(s.interval * s.ease * 1.3));
+    s.reps++; s.due = t + s.interval * DAY;
+  }
+  s.last = Date.now();
+  return s;
+}
+
+/* ---------- 読み上げ ---------- */
+var SPEECH = (function(){
+  var voice = null, warned = false;
+  function pick(){
+    if (voice || !window.speechSynthesis) return voice;
+    var vs = speechSynthesis.getVoices() || [];
+    var en = vs.filter(function(v){ return /^en(-|_|$)/i.test(v.lang); });
+    voice = en.filter(function(v){ return /US/i.test(v.lang); })[0] || en[0] || null;
+    return voice;
+  }
+  if (window.speechSynthesis) speechSynthesis.onvoiceschanged = function(){ voice = null; pick(); };
+  return {
+    say: function(text){
+      if (!window.speechSynthesis){
+        if (!warned){ warned = true; toast("この端末は読み上げに対応していません"); }
+        return;
+      }
+      var t = trim(text); if (!t) return;
+      try{
+        speechSynthesis.cancel();
+        var u = new SpeechSynthesisUtterance(t);
+        var v = pick(); if (v) u.voice = v;
+        u.lang = (v && v.lang) || "en-US";
+        u.rate = CFG.rate;
+        speechSynthesis.speak(u);
+      }catch(e){}
+    },
+    stop: function(){ try{ speechSynthesis.cancel(); }catch(e){} }
+  };
+})();
+
+/* ==========================================================================
+   取り込み — アプリごとのアダプタ
+
+   各アプリの実際の保存先はバラバラなので、ここで差を吸収する。
+     My Dictionary  localStorage "mydict.v1"
+     瞬間英作文     localStorage "sunkan:decks" / "sunkan:added" / "sunkan:stars"
+                    と、収録データ ../sunkan-333/assets/data.js
+     BOOKSHELF      IndexedDB "bookshelf" / store "books"
+     Grammer-dict   localStorage "grammar-dict-user-v1"
+   どれも読むだけ。書き戻しはしない。
+   ========================================================================== */
+
+function lsJSON(key, fallback){
+  try{
+    var raw = localStorage.getItem(key);
+    if (raw == null) return fallback;
+    var v = JSON.parse(raw);
+    return v == null ? fallback : v;
+  }catch(e){ return fallback; }
+}
+
+/* --- My Dictionary ------------------------------------------------------ */
+function pullMyDict(){
+  var arr = lsJSON("mydict.v1", []);
+  if (!Array.isArray(arr)) return [];
+  var out = [];
+  arr.forEach(function(it){
+    if (!it || typeof it !== "object") return;
+    var en = trim(it.en); if (!en) return;
+    out.push({
+      uid: "mydict:" + (trim(it.id) || hashString(en)),
+      src: "mydict",
+      en: en,
+      ja: trim(it.ja),
+      exEn: trim(it.ex),
+      exJa: trim(it.exJa),
+      note: "",
+      kind: ({word:"単語", phrase:"フレーズ", syntax:"構文"})[it.type] || "単語"
+    });
+  });
+  return out;
+}
+
+/* --- 瞬間英作文 ---------------------------------------------------------
+   星を付けた文が「詰まった文」。それだけを拾う。星を引き当てるために、
+   向こうと同じ手順で id を組み直す（収録分、アプリ内で足した分、の順）。 */
+var SUNKAN_DATA_URL = "../sunkan-333/assets/data.js";
+var SUNKAN_SEP = String.fromCharCode(1);   // 向こうの id 生成に使われている区切り
+function loadSunkanBuiltin(){
+  if (window.SUNKAN_DECKS) return Promise.resolve(window.SUNKAN_DECKS);
+  return new Promise(function(res){
+    var s = document.createElement("script");
+    s.src = SUNKAN_DATA_URL;
+    s.onload  = function(){ res(window.SUNKAN_DECKS || []); };
+    s.onerror = function(){ res([]); };   // 取れなくても自作デッキは拾える
+    document.head.appendChild(s);
+  });
+}
+function sunkanRecordIds(deck, added){
+  /* 向こうの buildRecords と同じ並び、同じ id を作る */
+  var base = (deck && deck.items) || [];
+  var extra = (added && added[deck.id]) || [];
+  var items = base.concat(extra), used = {}, out = [];
+  for (var i = 0; i < items.length; i++){
+    var it = items[i];
+    if (!it || typeof it !== "object") continue;
+    var ja = trim(it.ja), en = trim(it.en);
+    if (!ja || !en) continue;
+    var id = trim(it.id) || hashString(ja + SUNKAN_SEP + en);
+    if (used[id]){ var n = 2; while (used[id + "-" + n]) n++; id = id + "-" + n; }
+    used[id] = true;
+    out.push({ id: id, ja: ja, en: en, note: trim(it.note) });
+  }
+  return out;
+}
+function pullSunkan(){
+  return loadSunkanBuiltin().then(function(builtin){
+    var user  = lsJSON("sunkan:decks", []);
+    var added = lsJSON("sunkan:added", {});
+    var stars = lsJSON("sunkan:stars", {});
+    if (!Array.isArray(builtin)) builtin = [];
+    if (!Array.isArray(user)) user = [];
+    if (!stars || typeof stars !== "object") stars = {};
+    if (!added || typeof added !== "object") added = {};
+
+    var decks = builtin.concat(user), seen = {}, out = [];
+    decks.forEach(function(deck){
+      if (!deck || typeof deck !== "object") return;
+      var did = trim(deck.id); if (!did || seen[did]) return;
+      seen[did] = true;
+      var starred = stars[did];
+      if (!Array.isArray(starred) || !starred.length) return;   // 星が無いデッキは用が無い
+      var mark = {}; starred.forEach(function(id){ mark[id] = 1; });
+      sunkanRecordIds(deck, added).forEach(function(r){
+        if (!mark[r.id]) return;
+        out.push({
+          uid: "sunkan:" + did + ":" + r.id,
+          src: "sunkan",
+          en: r.en, ja: r.ja,
+          exEn: "", exJa: "",
+          note: r.note,
+          kind: "詰まった文",
+          deck: trim(deck.name) || did
+        });
+      });
+    });
+    return out;
+  });
+}
+
+/* --- BOOKSHELF ----------------------------------------------------------
+   「抜いた単語」という置き場はそもそも無い。あるのは本文と、その上の
+   ハイライト（marks）だけ。なので印を付けた範囲を単語として取り出す。
+   訳は元データに無いので、こちらで後から書き足せるようにしてある。 */
+function bookshelfSplitParts(text){
+  /* 位置合わせのため、向こうの splitParts をそのまま持ってきている。
+     ここがずれると marks の s/e が別の文字を指してしまう。 */
+  var HEAD = /^(chapter|chap\.?|part|prologue|epilogue|book|section)\b[\s.:—-]*[0-9ivxlcdm]*\.?\s*$/i;
+  var HEAD2 = /^(chapter|part|prologue|epilogue)\b/i;
+  var wordsOf = function(t){ var m = (t||"").trim().match(/[A-Za-z0-9'’\-]+/g); return m ? m.length : 0; };
+
+  var paras = (text||"").replace(/\r/g,"").split(/\n\s*\n+/)
+    .map(function(s){ return s.trim(); }).filter(Boolean);
+  if (!paras.length) return [{title:"本文", paras:["（本文がありません）"]}];
+
+  var heads = paras.filter(function(p){ return p.length<70 && (HEAD.test(p)||HEAD2.test(p)); });
+  var out = [];
+  if (heads.length >= 2){
+    var curP = null;
+    paras.forEach(function(p){
+      var isH = p.length<70 && (HEAD.test(p)||HEAD2.test(p));
+      if (isH || !curP){
+        curP = {title: isH ? p : "はじめ", paras: []};
+        out.push(curP);
+        if (isH) return;
+      }
+      curP.paras.push(p);
+    });
+  } else {
+    out = [{title:"", paras: paras.slice()}];
+  }
+  var LIMIT = 1400, res = [];
+  for (var k = 0; k < out.length; k++){
+    var p = out[k], buf = [], n = 0, seg = 0;
+    for (var i = 0; i < p.paras.length; i++){
+      var t = p.paras[i];
+      buf.push(t); n += wordsOf(t);
+      if (n >= LIMIT){
+        seg++;
+        res.push({title: p.title ? (seg>1 ? p.title+" ("+seg+")" : p.title) : "", paras: buf});
+        buf = []; n = 0;
+      }
+    }
+    if (buf.length){
+      seg++;
+      res.push({title: p.title ? (seg>1 ? p.title+" ("+seg+")" : p.title) : "", paras: buf});
+    }
+  }
+  return res;
+}
+function pullBookshelf(){
+  return new Promise(function(res){
+    var r;
+    try{ r = indexedDB.open("bookshelf"); }
+    catch(e){ res([]); return; }
+    r.onerror = function(){ res([]); };
+    r.onupgradeneeded = function(){
+      /* こちらから作りに行かない。無いなら無いで空のまま返す */
+      try{ r.transaction.abort(); }catch(e){}
+      res([]);
+    };
+    r.onsuccess = function(){
+      var db = r.result;
+      if (!db.objectStoreNames.contains("books")){ db.close(); res([]); return; }
+      try{
+        var t = db.transaction("books", "readonly");
+        var q = t.objectStore("books").getAll();
+        q.onsuccess = function(){ db.close(); res(booksToCards(q.result || [])); };
+        q.onerror = function(){ db.close(); res([]); };
+      }catch(e){ try{ db.close(); }catch(e2){} res([]); }
+    };
+  });
+}
+function booksToCards(books){
+  var out = [], seen = {};
+  books.forEach(function(b){
+    if (!b || typeof b !== "object" || !b.marks) return;
+    var parts = bookshelfSplitParts(b.text || "");
+    var flat = [];
+    parts.forEach(function(p){ p.paras.forEach(function(t){ flat.push(t); }); });
+
+    Object.keys(b.marks).forEach(function(giKey){
+      var gi = +giKey, para = flat[gi];
+      if (typeof para !== "string") return;
+      var runs = b.marks[giKey];
+      if (!Array.isArray(runs)) return;
+      runs.forEach(function(run){
+        if (!run || !(run.e > run.s)) return;
+        var raw = para.slice(run.s, run.e).trim();
+        /* 印は段落まるごとにも引ける。札として使えるのは語や短い句だけ */
+        if (!raw || raw.length > 60) return;
+        if (!/[A-Za-z]/.test(raw)) return;
+        var key = raw.toLowerCase().replace(/^[^a-z]+/, "").replace(/[^a-z0-9]+$/, "");
+        if (!key || seen[key]) return;
+        seen[key] = 1;
+        out.push({
+          uid: "bookshelf:" + hashString(key),
+          src: "bookshelf",
+          en: raw,
+          ja: "",                      // 訳は元に無い。あとから書き足す
+          exEn: para.length <= 240 ? para : "",
+          exJa: "",
+          note: trim(b.title),
+          kind: "洋書の印"
+        });
+      });
+    });
+  });
+  return out;
+}
+
+/* --- Grammer-dict ------------------------------------------------------- */
+function pullGrammar(){
+  var arr = lsJSON("grammar-dict-user-v1", []);
+  if (!Array.isArray(arr)) return [];
+  var out = [];
+  arr.forEach(function(it){
+    if (!it || typeof it !== "object") return;
+    var h = trim(it.h); if (!h) return;
+    var e0 = Array.isArray(it.e) && Array.isArray(it.e[0]) ? it.e[0] : ["", ""];
+    /* 見出しが "The thing is …" のような欠けた形のときは、
+       言い切りの形（f）を例文の側に回して、声に出せるようにしておく */
+    var exEn = trim(e0[0]) || trim(it.f);
+    out.push({
+      uid: "grammar:" + (trim(it.id) || hashString(h)),
+      src: "grammar",
+      en: h,
+      ja: trim(it.j),
+      exEn: exEn,
+      exJa: trim(e0[1]),
+      note: trim(it.n),
+      kind: trim(it.t) || "構文"
+    });
+  });
+  return out;
+}
+
+var SOURCES = {
+  mydict:    { label:"My Dictionary", short:"辞書", url:"../dictionary-22/", pull: pullMyDict,
+               where:"localStorage mydict.v1" },
+  sunkan:    { label:"瞬間英作文",    short:"瞬英", url:"../sunkan-333/",    pull: pullSunkan,
+               where:"localStorage sunkan:stars（星を付けた文だけ）" },
+  bookshelf: { label:"BOOKSHELF",     short:"洋書", url:"../BOOKSHELF/",     pull: pullBookshelf,
+               where:"IndexedDB bookshelf（本文のハイライト）" },
+  grammar:   { label:"Grammer-dict",  short:"構文", url:"../Grammer-dict/",  pull: pullGrammar,
+               where:"localStorage grammar-dict-user-v1" }
+};
+var SRC_ORDER = ["mydict", "sunkan", "bookshelf", "grammar"];
+
+/* ==========================================================================
+   出題モード
+
+   同じ素材を、入口を変えて何度も通す。どの入口が使えるかは素材が決める。
+   ========================================================================== */
+var MODES = {
+  produce:   { label:"日本語 → 英語", short:"産出", chip:"日本語 → 英語で言う" },
+  recognize: { label:"英文 → 意味",   short:"認識", chip:"英文 → 意味を確認" },
+  listen:    { label:"音 → 意味",     short:"音声", chip:"音だけ → 意味を答える" }
+};
+var MODE_ORDER = ["produce", "recognize", "listen"];
+
+function meaningOf(c){ return trim(c.gloss) || trim(c.ja); }
+/* 訳がまだ無い札。出題する前に、意味を書き足してもらう */
+function needsGloss(c){ return !meaningOf(c); }
+
+function modesFor(c){
+  if (needsGloss(c)) return [];
+  var m = [];
+  if (trim(c.ja)   || trim(c.gloss)) m.push("produce");
+  if (trim(c.en))   m.push("recognize");
+  if (trim(c.en) || trim(c.exEn)) m.push("listen");
+  return m.filter(function(k){ return CFG.modes[k]; });
+}
+
+/* ==========================================================================
+   状態
+   ========================================================================== */
+var ST = {
+  cards: [],        // 取り込んだ札
+  byUid: {},
+  srs: {},          // key -> 予定
+  log: [],          // 採点の記録
+  queue: [],        // 今日ぶんの並び
+  qi: 0,
+  view: "today",
+  revealed: false,
+  filterSrc: "all",
+  q: "",
+  pulling: false
+};
+
+function loadAll(){
+  return Promise.all([DB.all("cards"), DB.all("srs"), DB.all("log")])
+    .then(function(r){
+      ST.cards = r[0] || [];
+      ST.srs = {};
+      (r[1] || []).forEach(function(s){ ST.srs[s.key] = s; });
+      ST.log = r[2] || [];
+      reindex();
+    });
+}
+function reindex(){
+  ST.byUid = {};
+  ST.cards.forEach(function(c){ ST.byUid[c.uid] = c; });
+}
+function activeCards(){
+  return ST.cards.filter(function(c){ return CFG.sources[c.src]; });
+}
+function srsFor(uid, mode){
+  var k = uid + "|" + mode;
+  return ST.srs[k] || null;
+}
+function cardSeen(uid){
+  /* この札がどれかのモードで一度でも回ったか */
+  for (var i = 0; i < MODE_ORDER.length; i++){
+    var s = ST.srs[uid + "|" + MODE_ORDER[i]];
+    if (s && s.last) return true;
+  }
+  return false;
+}
+
+/* ==========================================================================
+   今日の並びを組む
+
+   1. 期限が来ているものを、古い順に。
+   2. 空きがあれば新しいものを足す。ただし
+      「すでに回している札の、別のモード」を先に取る。
+      同じ素材を別の入口から通す、というのがこのアプリの目的なので、
+      新しい素材を増やすより、持っている素材の面を増やすほうを優先する。
+   3. 初めての素材は 1 日 1 モードまで。同じ日に同じ文を 3 回見ても意味が薄い。
+   ========================================================================== */
+function buildQueue(){
+  var t = TODAY(), due = [], newSeen = [], newFresh = [], glossJobs = [];
+  var freshTaken = {};
+
+  activeCards().forEach(function(c){
+    if (needsGloss(c)){ glossJobs.push({ card:c, mode:"gloss" }); return; }
+    modesFor(c).forEach(function(mode){
+      var s = srsFor(c.uid, mode);
+      if (s && s.last){
+        if (s.due <= t) due.push({ card:c, mode:mode, srs:s, due:s.due });
+      } else {
+        (cardSeen(c.uid) ? newSeen : newFresh).push({ card:c, mode:mode });
+      }
+    });
+  });
+
+  due.sort(function(a, b){ return a.due - b.due; });
+  shuffle(newSeen);
+  shuffle(newFresh);
+
+  var picked = [], room = Math.max(0, CFG.newPerDay);
+  /* 面の補完を優先しきってしまうと、手持ちが多いときに新しい素材が
+     いつまでも入ってこない。枠の 6 割までを補完に充てて、残りは新顔に空けておく。 */
+  var keep = Math.ceil(room * 0.6);
+  var si = 0, fi = 0;
+  for (; si < newSeen.length && picked.length < keep; si++) picked.push(newSeen[si]);
+  for (; fi < newFresh.length && picked.length < room; fi++){
+    var it = newFresh[fi];
+    if (freshTaken[it.card.uid]) continue;   // 初めての素材は今日 1 モードだけ
+    freshTaken[it.card.uid] = 1;
+    picked.push(it);
+  }
+  /* 新顔が尽きたなら、空いた枠は補完に回す */
+  for (; si < newSeen.length && picked.length < room; si++) picked.push(newSeen[si]);
+
+  /* 訳が無い札は「意味を書き足す」仕事として、新規枠と同じだけ混ぜる */
+  shuffle(glossJobs);
+  glossJobs = glossJobs.slice(0, Math.max(3, Math.round(room / 2)));
+
+  var q = due.concat(picked, glossJobs);
+  if (q.length > CFG.maxPerDay) q = q.slice(0, CFG.maxPerDay);
+  ST.queue = q;
+  ST.qi = 0;
+  ST.revealed = false;
+}
+
+/* 落とした札を、少し先に差し込んでその日のうちにもう一度出す */
+function requeue(entry){
+  var at = Math.min(ST.queue.length, ST.qi + 1 + 4);
+  ST.queue.splice(at, 0, entry);
+}
+
+/* ==========================================================================
+   取り込み
+   ========================================================================== */
+function pullAll(silent){
+  if (ST.pulling) return Promise.resolve();
+  ST.pulling = true;
+  var btn = $("#btnPull"); if (btn) btn.dataset.busy = "1";
+
+  var names = SRC_ORDER.filter(function(k){ return CFG.sources[k]; });
+  var added = 0, dropped = 0, stalled = [];
+
+  var chain = names.reduce(function(p, name){
+    return p.then(function(){
+      return Promise.resolve().then(function(){ return SOURCES[name].pull(); })
+        .then(function(fresh){
+          if (!Array.isArray(fresh)) fresh = [];
+          var prev = ST.cards.filter(function(c){ return c.src === name; });
+
+          /* iOS はホーム画面のアプリとブラウザで保存領域が分かれる。
+             片方から見ると相手の保存が丸ごと空に見えるので、
+             「前はあったのに今回 0 件」を消滅と受け取ってはいけない。 */
+          if (!fresh.length && prev.length){ stalled.push(name); return; }
+
+          var prevMap = {};
+          prev.forEach(function(c){ prevMap[c.uid] = c; });
+          var freshMap = {};
+
+          var puts = fresh.map(function(c){
+            freshMap[c.uid] = 1;
+            var old = prevMap[c.uid];
+            if (!old) added++;
+            c.gloss   = old ? (old.gloss || "") : "";   // 書き足した訳は引き継ぐ
+            c.addedAt = old ? (old.addedAt || Date.now()) : Date.now();
+            return c;
+          });
+          var gone = prev.filter(function(c){ return !freshMap[c.uid]; });
+          dropped += gone.length;
+
+          return DB.putAll("cards", puts).then(function(){
+            return Promise.all(gone.map(function(c){ return DB.del("cards", c.uid); }));
+          });
+        })
+        .catch(function(){ stalled.push(name); });
+    });
+  }, Promise.resolve());
+
+  return chain.then(loadAll).then(function(){
+    ST.pulling = false;
+    if (btn) btn.dataset.busy = "";
+    buildQueue();
+    render();
+    if (silent) return;
+    var msg = [];
+    if (added)   msg.push("＋" + added + " 件");
+    if (dropped) msg.push("－" + dropped + " 件");
+    if (stalled.length){
+      msg.push(stalled.map(function(n){ return SOURCES[n].short; }).join("・") + " は読めず");
+    }
+    toast(msg.length ? msg.join(" / ") : "変わりなし");
+  }).catch(function(){
+    ST.pulling = false;
+    if (btn) btn.dataset.busy = "";
+    toast("取り込めませんでした");
+  });
+}
+
+/* ==========================================================================
+   採点
+   ========================================================================== */
+function grade(g){
+  var e = ST.queue[ST.qi];
+  if (!e || e.mode === "gloss") return;
+  var s = srsFor(e.card.uid, e.mode) || newSrs(e.card.uid, e.mode);
+  schedule(s, g);
+  ST.srs[s.key] = s;
+
+  var rec = { ts: Date.now(), uid: e.card.uid, mode: e.mode, grade: g };
+  ST.log.push(rec);
+
+  Promise.all([DB.put("srs", s), DB.put("log", rec)]).catch(function(){
+    toast("記録を保存できませんでした");
+  });
+
+  if (g === 0) requeue({ card: e.card, mode: e.mode, srs: s });
+  next();
+}
+function saveGloss(text){
+  var e = ST.queue[ST.qi];
+  if (!e || e.mode !== "gloss") return;
+  var v = trim(text);
+  if (!v){ toast("意味を入れてください"); return; }
+  e.card.gloss = v;
+  DB.put("cards", e.card).catch(function(){ toast("保存できませんでした"); });
+  toast("書き足しました");
+  next();
+}
+function next(){
+  SPEECH.stop();
+  ST.qi++;
+  ST.revealed = false;
+  render();
+}
+
+/* ==========================================================================
+   画面
+   ========================================================================== */
+function fmtDue(due){
+  var d = Math.round((due - TODAY()) / DAY);
+  if (d <= 0) return "今日";
+  if (d === 1) return "明日";
+  if (d < 30) return d + "日後";
+  if (d < 365) return Math.round(d / 30) + "か月後";
+  return Math.round(d / 365) + "年後";
+}
+function srcChip(c){
+  var s = SOURCES[c.src];
+  return '<span class="chip src">' + esc(s ? s.label : c.src) + "</span>";
+}
+
+function render(){
+  ["today","list","stats"].forEach(function(v){
+    $("#v-" + v).classList.toggle("hidden", ST.view !== v);
+  });
+  Array.prototype.forEach.call($("#tabs").children, function(b){
+    b.classList.toggle("on", b.dataset.v === ST.view);
+  });
+  var left = Math.max(0, ST.queue.length - ST.qi);
+  $("#tabN").textContent = left ? left : "";
+
+  if (ST.view === "today") renderToday();
+  else if (ST.view === "list") renderList();
+  else renderStats();
+}
+
+/* ---------- 今日 ---------- */
+function renderToday(){
+  var el = $("#v-today");
+  var total = ST.queue.length, doneN = ST.qi, e = ST.queue[ST.qi];
+
+  if (!ST.cards.length){
+    el.innerHTML = emptyNoCards();
+    wireEmpty();
+    return;
+  }
+  if (!e){
+    el.innerHTML = emptyDone(total);
+    wireEmpty();
+    return;
+  }
+
+  var pct = total ? Math.round(doneN / total * 100) : 0;
+  var html =
+    '<div class="bar"><i style="width:' + pct + '%"></i></div>' +
+    '<div class="counts">' +
+      "<span>のこり <b>" + (total - doneN) + "</b></span>" +
+      "<span>おわり <b>" + doneN + "</b></span>" +
+      "<span>ぜんぶで <b>" + total + "</b></span>" +
+    "</div>" +
+    (e.mode === "gloss" ? cardGloss(e) : cardNormal(e));
+
+  el.innerHTML = html;
+  wireCard(e);
+
+  if (e.mode === "listen" && !ST.revealed && CFG.autoSpeak) SPEECH.say(speakText(e.card));
+}
+
+/* 見出しが "be about to …" のように欠けている札は、そのまま読ませると
+   間の抜けた音になる。言い切りの例文があるならそちらを読む。 */
+function speakText(c){
+  var en = trim(c.en), ex = trim(c.exEn);
+  if (en && /[…〜~]|\.\.\./.test(en) && ex) return ex;
+  return en || ex;
+}
+
+function cardNormal(e){
+  var c = e.card, m = e.mode, s = srsFor(c.uid, m);
+  var isNew = !s || !s.last;
+  var mean = meaningOf(c);
+
+  var meta =
+    '<div class="card-meta">' + srcChip(c) +
+      '<span class="chip mode">' + esc(MODES[m].chip) + "</span>" +
+      '<span class="chip">' + esc(c.kind || "") + "</span>" +
+      (isNew ? '<span class="chip new">はじめて</span>' : "") +
+    "</div>";
+
+  var prompt;
+  if (m === "produce"){
+    prompt = '<div class="prompt">' + esc(mean) + "</div>";
+  } else if (m === "recognize"){
+    prompt = '<div class="prompt en">' + esc(c.en) + "</div>";
+  } else {
+    prompt =
+      '<button class="speak-big" id="bigPlay">🔊' +
+        "<small>もう一度 聞く</small>" +
+      "</button>";
+  }
+
+  var body = meta + prompt;
+
+  if (!ST.revealed){
+    body += '<button class="btn-wide" id="reveal">こたえを見る</button>';
+  } else {
+    var ansMain, ansSub = "";
+    if (m === "produce"){ ansMain = c.en; }
+    else if (m === "recognize"){ ansMain = mean; ansSub = ""; }
+    else { ansMain = c.en; ansSub = mean; }
+
+    var ans = '<div class="answer"><div class="main">' + esc(ansMain) + "</div>";
+    if (ansSub) ans += '<div class="sub">' + esc(ansSub) + "</div>";
+    if (m === "produce" && c.deck) ans += '<div class="sub">' + esc(c.deck) + "</div>";
+    if (trim(c.exEn)){
+      ans += '<div class="ex">' + esc(c.exEn) +
+             (trim(c.exJa) ? '<span class="ja">' + esc(c.exJa) + "</span>" : "") + "</div>";
+    }
+    if (trim(c.note)) ans += '<div class="note">' + esc(c.note) + "</div>";
+    if (speakText(c)){
+      ans += '<div class="row-play"><button class="mini" id="play">🔊 聞く</button>' +
+             (trim(c.exEn) && trim(c.exEn) !== trim(c.en)
+               ? '<button class="mini" id="playEx">🔊 例文</button>' : "") +
+             (SOURCES[c.src] ? '<a class="mini" href="' + esc(SOURCES[c.src].url) +
+                '" target="_blank" rel="noopener">元のアプリ</a>' : "") +
+             "</div>";
+    }
+    ans += "</div>";
+
+    body += ans +
+      '<div class="grades">' +
+        '<button data-g="0"><b>もう一度</b><small>今日また</small></button>' +
+        '<button data-g="1"><b>むずかしい</b><small>' + gradePreview(s, 1) + "</small></button>" +
+        '<button data-g="2"><b>できた</b><small>' + gradePreview(s, 2) + "</small></button>" +
+        '<button data-g="3"><b>かんたん</b><small>' + gradePreview(s, 3) + "</small></button>" +
+      "</div>";
+  }
+  return '<div class="card">' + body + "</div>";
+}
+
+function gradePreview(s, g){
+  var copy = s ? JSON.parse(JSON.stringify(s)) : newSrs("x", "y");
+  schedule(copy, g);
+  return fmtDue(copy.due);
+}
+
+function cardGloss(e){
+  var c = e.card;
+  return '<div class="card">' +
+    '<div class="card-meta">' + srcChip(c) +
+      '<span class="chip mode">意味を書き足す</span>' +
+      '<span class="chip">' + esc(c.kind || "") + "</span></div>" +
+    '<div class="prompt en">' + esc(c.en) + "</div>" +
+    (trim(c.exEn) ? '<div class="ex" style="margin-top:12px">' + esc(c.exEn) + "</div>" : "") +
+    (trim(c.note) ? '<div class="note">' + esc(c.note) + "</div>" : "") +
+    '<div class="gloss">' +
+      "<label>この語の意味。これを入れると、明日から出題に回ります</label>" +
+      '<input id="glossIn" type="text" autocomplete="off" autocapitalize="off" ' +
+        'placeholder="日本語で短く" value="' + esc(c.gloss || "") + '">' +
+    "</div>" +
+    '<div class="row-play">' +
+      '<button class="mini" id="play">🔊 聞く</button>' +
+      (SOURCES[c.src] ? '<a class="mini" href="' + esc(SOURCES[c.src].url) +
+        '" target="_blank" rel="noopener">本で見る</a>' : "") +
+    "</div>" +
+    '<button class="btn-wide" id="glossSave">書き足して次へ</button>' +
+    '<button class="mini" id="glossSkip" style="width:100%;margin-top:8px">とばす</button>' +
+  "</div>";
+}
+
+function wireCard(e){
+  var big = $("#bigPlay");
+  if (big) big.onclick = function(){ SPEECH.say(speakText(e.card)); };
+  var rev = $("#reveal");
+  if (rev) rev.onclick = function(){
+    ST.revealed = true;
+    render();
+    if (e.mode !== "listen" && CFG.autoSpeak) SPEECH.say(speakText(e.card));
+  };
+  var p = $("#play");   if (p) p.onclick = function(){ SPEECH.say(speakText(e.card)); };
+  var px = $("#playEx"); if (px) px.onclick = function(){ SPEECH.say(e.card.exEn); };
+
+  var gs = document.querySelectorAll(".grades button");
+  Array.prototype.forEach.call(gs, function(b){
+    b.onclick = function(){ grade(+b.dataset.g); };
+  });
+
+  var gi = $("#glossIn");
+  if (gi){
+    $("#glossSave").onclick = function(){ saveGloss(gi.value); };
+    gi.onkeydown = function(ev){ if (ev.key === "Enter") saveGloss(gi.value); };
+    $("#glossSkip").onclick = function(){ next(); };
+  }
+}
+
+function emptyNoCards(){
+  var links = SRC_ORDER.map(function(k){
+    return '<a class="mini" href="' + esc(SOURCES[k].url) + '" target="_blank" rel="noopener">' +
+           esc(SOURCES[k].label) + "</a>";
+  }).join(" ");
+  return '<div class="empty"><div class="big">📥</div>' +
+    "<h2>まだ何も入っていません</h2>" +
+    "<p>右上の ⟳ で、各アプリから項目を集めます。</p>" +
+    '<div class="note-box" style="text-align:left;margin-top:18px">' +
+      "拾ってこられるのは、<br>" +
+      SRC_ORDER.map(function(k){
+        return "・" + esc(SOURCES[k].label) + " … " + esc(SOURCES[k].where);
+      }).join("<br>") +
+      "<br><br><b>読めないときは</b>ホーム画面に追加したアプリと、ブラウザで開いたアプリとで、" +
+      "iOS は保存領域が分かれています。項目を入れたのと同じ側から、このアプリも開いてください。" +
+    "</div>" +
+    '<div class="row-play" style="justify-content:center;flex-wrap:wrap">' + links + "</div>" +
+    '<button class="btn-wide" id="emptyPull" style="max-width:280px;margin:18px auto 0">取り込む</button>' +
+  "</div>";
+}
+
+function emptyDone(total){
+  var t = TODAY(), nextDue = Infinity, waiting = 0;
+  Object.keys(ST.srs).forEach(function(k){
+    var s = ST.srs[k];
+    if (!s.last) return;
+    if (!ST.byUid[s.uid] || !CFG.sources[ST.byUid[s.uid].src]) return;
+    if (s.due > t){ waiting++; if (s.due < nextDue) nextDue = s.due; }
+  });
+  var todayN = ST.log.filter(function(r){ return r.ts >= t; }).length;
+  return '<div class="empty"><div class="big">' + (total ? "🌙" : "☕") + "</div>" +
+    "<h2>" + (total ? "今日のぶんは終わりです" : "今日出すものはありません") + "</h2>" +
+    "<p>今日 " + todayN + " 回。<br>" +
+    (nextDue < Infinity ? "次は " + fmtDue(nextDue) + "、" + waiting + " 件が控えています。"
+                        : "予定に入っているものはまだありません。") + "</p>" +
+    '<button class="btn-wide" id="emptyPull" style="max-width:280px;margin:18px auto 0">取り込む</button>' +
+    '<button class="mini" id="emptyMore" style="margin-top:10px">先の分を前倒しで出す</button>' +
+  "</div>";
+}
+
+function wireEmpty(){
+  var b = $("#emptyPull"); if (b) b.onclick = function(){ pullAll(false); };
+  var m = $("#emptyMore");
+  if (m) m.onclick = function(){
+    /* 予定より早いぶんを、期限の近い順に少しだけ引っぱってくる */
+    var t = TODAY(), ahead = [];
+    activeCards().forEach(function(c){
+      if (needsGloss(c)) return;
+      modesFor(c).forEach(function(mode){
+        var s = srsFor(c.uid, mode);
+        if (s && s.last && s.due > t) ahead.push({ card:c, mode:mode, srs:s, due:s.due });
+      });
+    });
+    if (!ahead.length){ toast("前倒しできるものがありません"); return; }
+    ahead.sort(function(a, b2){ return a.due - b2.due; });
+    ST.queue = ST.queue.concat(ahead.slice(0, 20));
+    ST.revealed = false;
+    render();
+  };
+}
+
+/* ---------- 一覧 ---------- */
+function renderList(){
+  var el = $("#v-list"), t = TODAY();
+  var counts = {};
+  SRC_ORDER.forEach(function(k){ counts[k] = { n:0, due:0, gloss:0 }; });
+  ST.cards.forEach(function(c){
+    if (!counts[c.src]) return;
+    counts[c.src].n++;
+    if (needsGloss(c)){ counts[c.src].gloss++; return; }
+    var hit = modesFor(c).some(function(m){
+      var s = srsFor(c.uid, m); return !s || !s.last || s.due <= t;
+    });
+    if (hit) counts[c.src].due++;
+  });
+
+  var grid = SRC_ORDER.map(function(k){
+    var s = SOURCES[k], c = counts[k];
+    return '<div class="srccard" style="' + (CFG.sources[k] ? "" : "opacity:.45") + '">' +
+      '<div class="n">' + c.n + "</div>" +
+      '<div class="l">' + esc(s.label) + "</div>" +
+      '<div class="d">' + (CFG.sources[k]
+        ? ("今日 " + c.due + " 件" + (c.gloss ? " ・訳待ち " + c.gloss : ""))
+        : "取り込まない") + "</div>" +
+    "</div>";
+  }).join("");
+
+  var filters = '<div class="filters">' +
+    '<button data-f="all"' + (ST.filterSrc === "all" ? ' class="on"' : "") + ">すべて</button>" +
+    SRC_ORDER.map(function(k){
+      return '<button data-f="' + k + '"' + (ST.filterSrc === k ? ' class="on"' : "") + ">" +
+             esc(SOURCES[k].short) + "</button>";
+    }).join("") + "</div>";
+
+  var q = ST.q.toLowerCase();
+  var rows = ST.cards.filter(function(c){
+    if (ST.filterSrc !== "all" && c.src !== ST.filterSrc) return false;
+    if (!q) return true;
+    return (c.en + " " + c.ja + " " + (c.gloss||"") + " " + (c.note||"")).toLowerCase().indexOf(q) >= 0;
+  });
+  rows.sort(function(a, b){ return (b.addedAt||0) - (a.addedAt||0); });
+
+  var list = rows.slice(0, 300).map(function(c){
+    var tags = modesFor(c).map(function(m){
+      var s = srsFor(c.uid, m);
+      var when = (!s || !s.last) ? "はじめて" : fmtDue(s.due);
+      var due = (!s || !s.last || s.due <= t);
+      return '<span class="tag' + (due ? " due" : "") + '">' +
+             esc(MODES[m].short) + " " + esc(when) + "</span>";
+    }).join("");
+    if (needsGloss(c)) tags = '<span class="tag due">訳待ち</span>';
+    return '<div class="item">' +
+      '<div class="t">' + esc(c.en) + "</div>" +
+      (meaningOf(c) ? '<div class="s">' + esc(meaningOf(c)) + "</div>" : "") +
+      '<div class="m"><span class="tag">' + esc(SOURCES[c.src] ? SOURCES[c.src].short : c.src) +
+        "</span>" + tags + "</div>" +
+    "</div>";
+  }).join("");
+
+  el.innerHTML = '<div class="srcgrid">' + grid + "</div>" + filters +
+    '<input class="search" id="q" type="search" placeholder="さがす" value="' + esc(ST.q) + '">' +
+    (rows.length ? list : '<div class="empty"><p>見つかりません</p></div>') +
+    (rows.length > 300 ? '<div class="empty"><p>ほか ' + (rows.length - 300) + " 件</p></div>" : "");
+
+  Array.prototype.forEach.call(el.querySelectorAll(".filters button"), function(b){
+    b.onclick = function(){ ST.filterSrc = b.dataset.f; render(); };
+  });
+  var qi = $("#q");
+  qi.oninput = function(){
+    ST.q = qi.value;
+    clearTimeout(renderList._t);
+    renderList._t = setTimeout(function(){
+      var pos = qi.selectionStart; render();
+      var n = $("#q"); if (n){ n.focus(); try{ n.setSelectionRange(pos, pos); }catch(e){} }
+    }, 220);
+  };
+}
+
+/* ---------- 記録 ---------- */
+function renderStats(){
+  var el = $("#v-stats"), t = TODAY();
+  var byDay = {};
+  ST.log.forEach(function(r){
+    var d = new Date(r.ts); d.setHours(0,0,0,0);
+    byDay[d.getTime()] = (byDay[d.getTime()] || 0) + 1;
+  });
+
+  var streak = 0;
+  for (var d = t; byDay[d]; d -= DAY) streak++;
+  if (!byDay[t] && byDay[t - DAY]){ streak = 0; for (var d2 = t - DAY; byDay[d2]; d2 -= DAY) streak++; }
+
+  var days = [], max = 1;
+  for (var i = 13; i >= 0; i--){
+    var k = t - i * DAY, v = byDay[k] || 0;
+    days.push({ k:k, v:v }); if (v > max) max = v;
+  }
+
+  var fc = {}, waiting = 0;
+  Object.keys(ST.srs).forEach(function(key){
+    var s = ST.srs[key];
+    if (!s.last) return;
+    var c = ST.byUid[s.uid];
+    if (!c || !CFG.sources[c.src]) return;
+    var day = Math.max(t, s.due);
+    if (day <= t + 7 * DAY){ fc[day] = (fc[day] || 0) + 1; waiting++; }
+  });
+  var fcMax = 1;
+  Object.keys(fc).forEach(function(k){ if (fc[k] > fcMax) fcMax = fc[k]; });
+  var fcRows = "";
+  for (var j = 0; j <= 7; j++){
+    var day = t + j * DAY, n = fc[day] || 0;
+    fcRows += '<div class="fcrow"><span class="d">' + (j === 0 ? "今日" : fmtDue(day)) + "</span>" +
+      '<span class="b"><i style="width:' + Math.round(n / fcMax * 100) + '%"></i></span>' +
+      '<span class="v">' + n + "</span></div>";
+  }
+
+  var scheduled = Object.keys(ST.srs).filter(function(k){ return ST.srs[k].last; }).length;
+
+  el.innerHTML =
+    '<div class="statrow">' +
+      '<div class="stat"><div class="n">' + (byDay[t] || 0) + '</div><div class="l">今日</div></div>' +
+      '<div class="stat"><div class="n" style="color:var(--acc)">' + streak + '</div><div class="l">続いた日</div></div>' +
+      '<div class="stat"><div class="n">' + ST.cards.length + '</div><div class="l">札</div></div>' +
+    "</div>" +
+    '<div class="spark">' + days.map(function(x){
+      return '<i data-v="' + (x.v ? 1 : 0) + '" style="height:' +
+             Math.max(2, Math.round(x.v / max * 100)) + '%" title="' + x.v + '"></i>';
+    }).join("") + "</div>" +
+    '<div class="fc"><h3>これから 7 日の予定（回している面 ' + scheduled + " ／ 予定 " + waiting + "）</h3>" +
+      fcRows + "</div>";
+}
+
+/* ---------- 設定 ---------- */
+function openCfg(){
+  var counts = {};
+  SRC_ORDER.forEach(function(k){ counts[k] = 0; });
+  ST.cards.forEach(function(c){ if (counts[c.src] != null) counts[c.src]++; });
+
+  $("#cfgSheet").innerHTML =
+    "<h2>設定</h2>" +
+    '<div class="fld"><label>1日に出す新しい面のかず</label>' +
+      '<input type="number" id="cNew" min="0" max="200" value="' + CFG.newPerDay + '"></div>' +
+    '<div class="fld"><label>1日の上限</label>' +
+      '<input type="number" id="cMax" min="1" max="500" value="' + CFG.maxPerDay + '"></div>' +
+
+    '<div class="fld"><label>どこから集めるか</label><div class="toggles">' +
+      SRC_ORDER.map(function(k){
+        return '<div class="tg"><input type="checkbox" id="s_' + k + '"' +
+          (CFG.sources[k] ? " checked" : "") + '>' +
+          '<div class="tx"><b>' + esc(SOURCES[k].label) + "</b>" +
+          "<small>" + esc(SOURCES[k].where) + "</small></div>" +
+          '<span class="cnt">' + counts[k] + "</span></div>";
+      }).join("") +
+    "</div></div>" +
+
+    '<div class="fld"><label>回すモード</label><div class="toggles">' +
+      MODE_ORDER.map(function(k){
+        return '<div class="tg"><input type="checkbox" id="m_' + k + '"' +
+          (CFG.modes[k] ? " checked" : "") + '>' +
+          '<div class="tx"><b>' + esc(MODES[k].label) + "</b>" +
+          "<small>" + esc(MODES[k].chip) + "</small></div></div>";
+      }).join("") +
+    "</div></div>" +
+
+    '<div class="fld"><label>読み上げの速さ</label>' +
+      '<select id="cRate">' +
+        [["0.7","ゆっくり"],["0.85","すこしゆっくり"],["0.95","ふつう"],["1.1","はやめ"],["1.25","はやい"]]
+          .map(function(o){
+            return '<option value="' + o[0] + '"' +
+              (Math.abs(CFG.rate - +o[0]) < 0.03 ? " selected" : "") + ">" + o[1] + "</option>";
+          }).join("") +
+      "</select></div>" +
+
+    '<div class="fld"><div class="toggles">' +
+      '<div class="tg"><input type="checkbox" id="cAutoPull"' + (CFG.autoPull ? " checked" : "") + ">" +
+        '<div class="tx"><b>開いたら自動で取り込む</b><small>起動のたびに各アプリを見に行く</small></div></div>' +
+      '<div class="tg"><input type="checkbox" id="cAutoSpeak"' + (CFG.autoSpeak ? " checked" : "") + ">" +
+        '<div class="tx"><b>こたえを見たら自動で読む</b><small>音声モードは出した瞬間に読む</small></div></div>' +
+    "</div></div>" +
+
+    '<div class="note-box">項目そのものは元のアプリのものです。ここは読むだけで、' +
+      "元の中身は書き換えません。ここで書き足した訳と、いつ出すかの予定だけが、" +
+      "このアプリの持ちものです。</div>" +
+
+    '<div class="sheet-btns">' +
+      '<button class="b-sec" id="cExport">書き出す</button>' +
+      '<button class="b-sec" id="cImport">読み込む</button>' +
+    "</div>" +
+    '<div class="sheet-btns" style="margin-top:9px">' +
+      '<button class="b-sec" id="cReset" style="color:var(--bad)">予定をぜんぶ消す</button>' +
+    "</div>" +
+    '<div class="sheet-btns" style="margin-top:16px">' +
+      '<button class="b-pri" id="cSave">保存する</button>' +
+    "</div>";
+
+  $("#cfgScrim").classList.add("on");
+
+  $("#cSave").onclick = function(){
+    CFG.newPerDay = Math.max(0, Math.min(200, parseInt($("#cNew").value, 10) || 0));
+    CFG.maxPerDay = Math.max(1, Math.min(500, parseInt($("#cMax").value, 10) || 1));
+    CFG.rate = +$("#cRate").value;
+    SRC_ORDER.forEach(function(k){ CFG.sources[k] = $("#s_" + k).checked; });
+    MODE_ORDER.forEach(function(k){ CFG.modes[k] = $("#m_" + k).checked; });
+    CFG.autoPull  = $("#cAutoPull").checked;
+    CFG.autoSpeak = $("#cAutoSpeak").checked;
+    if (!MODE_ORDER.some(function(k){ return CFG.modes[k]; })){
+      CFG.modes.produce = true;
+      toast("モードは1つ以上いります");
+    }
+    save_cfg();
+    closeCfg();
+    buildQueue();
+    render();
+  };
+  $("#cExport").onclick = exportJSON;
+  $("#cImport").onclick = importJSON;
+  $("#cReset").onclick = function(){
+    if (!confirm("いつ出すかの予定と、やった記録を消します。札そのものは残ります。よろしいですか？")) return;
+    Promise.all([DB.clear("srs"), DB.clear("log")]).then(function(){
+      ST.srs = {}; ST.log = [];
+      closeCfg(); buildQueue(); render(); toast("予定を消しました");
+    });
+  };
+}
+function closeCfg(){ $("#cfgScrim").classList.remove("on"); }
+
+/* ---------- 持ち出し ----------
+   iOS はホーム画面のアプリとブラウザで保存領域が分かれる。
+   予定と、書き足した訳は、こちら側にしか無いので、移す道を用意しておく。 */
+function exportJSON(){
+  var payload = {
+    v: 1, at: Date.now(), settings: CFG,
+    gloss: ST.cards.filter(function(c){ return trim(c.gloss); })
+                   .map(function(c){ return { uid:c.uid, gloss:c.gloss }; }),
+    srs: Object.keys(ST.srs).map(function(k){ return ST.srs[k]; }),
+    log: ST.log
+  };
+  var blob = new Blob([JSON.stringify(payload)], {type:"application/json"});
+  var a = document.createElement("a");
+  var d = new Date(), p = function(n){ return (n<10?"0":"") + n; };
+  a.href = URL.createObjectURL(blob);
+  a.download = "revq-" + d.getFullYear() + p(d.getMonth()+1) + p(d.getDate()) + ".json";
+  document.body.appendChild(a); a.click();
+  setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+}
+function importJSON(){
+  var inp = document.createElement("input");
+  inp.type = "file"; inp.accept = "application/json,.json";
+  inp.onchange = function(){
+    var f = inp.files && inp.files[0]; if (!f) return;
+    var fr = new FileReader();
+    fr.onload = function(){
+      var d;
+      try{ d = JSON.parse(fr.result); }catch(e){ toast("読めませんでした"); return; }
+      if (!d || typeof d !== "object"){ toast("読めませんでした"); return; }
+      var jobs = [];
+      if (Array.isArray(d.srs)){
+        d.srs.forEach(function(s){
+          if (!s || !s.key) return;
+          var cur = ST.srs[s.key];
+          if (cur && cur.last >= (s.last || 0)) return;   // 新しいほうを残す
+          ST.srs[s.key] = s; jobs.push(DB.put("srs", s));
+        });
+      }
+      if (Array.isArray(d.gloss)){
+        d.gloss.forEach(function(g){
+          var c = g && ST.byUid[g.uid];
+          if (c && !trim(c.gloss) && trim(g.gloss)){ c.gloss = g.gloss; jobs.push(DB.put("cards", c)); }
+        });
+      }
+      if (Array.isArray(d.log)){
+        var have = {}; ST.log.forEach(function(r){ have[r.ts] = 1; });
+        d.log.forEach(function(r){
+          if (!r || !r.ts || have[r.ts]) return;
+          ST.log.push(r); jobs.push(DB.put("log", r));
+        });
+      }
+      Promise.all(jobs).then(function(){
+        closeCfg(); buildQueue(); render(); toast("読み込みました");
+      });
+    };
+    fr.readAsText(f);
+  };
+  inp.click();
+}
+
+/* ==========================================================================
+   起動
+   ========================================================================== */
+Array.prototype.forEach.call($("#tabs").children, function(b){
+  b.onclick = function(){ ST.view = b.dataset.v; SPEECH.stop(); render(); };
+});
+$("#btnPull").onclick = function(){ pullAll(false); };
+$("#btnCfg").onclick = openCfg;
+$("#cfgScrim").onclick = function(e){ if (e.target === $("#cfgScrim")) closeCfg(); };
+document.addEventListener("keydown", function(e){
+  if (e.key === "Escape" && $("#cfgScrim").classList.contains("on")) closeCfg();
+  if (ST.view !== "today" || $("#cfgScrim").classList.contains("on")) return;
+  if (e.target && /input|textarea|select/i.test(e.target.tagName)) return;
+  if (e.key === " " || e.key === "Enter"){
+    var r = $("#reveal"); if (r){ e.preventDefault(); r.click(); }
+  }
+  if (/^[1-4]$/.test(e.key) && ST.revealed) grade(+e.key - 1);
+});
+
+loadAll().then(function(){
+  buildQueue();
+  render();
+  if (CFG.autoPull) return pullAll(true);
+}).catch(function(){
+  toast("保存領域を開けませんでした");
+  render();
+});
+
+if ("serviceWorker" in navigator){
+  window.addEventListener("load", function(){
+    navigator.serviceWorker.register("sw.js").catch(function(){});
+  });
+}
+</script>
+</body>
+</html>

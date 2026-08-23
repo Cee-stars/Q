@@ -1,0 +1,11 @@
+{
+  "name": "復習キュー",
+  "short_name": "復習キュー",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#12131A",
+  "theme_color": "#12131A",
+  "lang": "ja",
+  "description": "各アプリに散らばった学習項目を1本のキューにまとめ、忘れそうな頃に複数のモードで出題する。"
+}
