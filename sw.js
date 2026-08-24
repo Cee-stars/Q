@@ -1,7 +1,8 @@
 /* 復習キュー — 本体だけを持っておく。
    取り込み元のデータは毎回その場で読むので、ここでは触らない。 */
 const CACHE = "revq-v1";
-const ASSETS = ["./", "./index.html", "./manifest.webmanifest"];
+const ASSETS = ["./", "./index.html", "./manifest.webmanifest",
+                "./icon.svg", "./favicon.png", "./icon-180.png"];
 const BASE = new URL("./", self.location).pathname;   // 置き場所が変わっても効くように
 
 self.addEventListener("install", e => {
