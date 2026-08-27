@@ -589,29 +589,34 @@ function pullSunkan(ctx){
       stars = mergeSunkanStars(stars, remote.stars);
     }
 
-    var decks = builtin.concat(user), seen = {}, out = [];
-    decks.forEach(function(deck){
-      if (!deck || typeof deck !== "object") return;
-      var did = trim(deck.id); if (!did || seen[did]) return;
-      seen[did] = true;
-      var starred = stars[did];
-      if (!Array.isArray(starred) || !starred.length) return;   // 星が無いデッキは用が無い
-      var mark = {}; starred.forEach(function(id){ mark[id] = 1; });
-      sunkanRecordIds(deck, added).forEach(function(r){
-        if (!mark[r.id]) return;
-        out.push({
-          uid: "sunkan:" + did + ":" + r.id,
-          src: "sunkan",
-          en: r.en, ja: r.ja,
-          exEn: "", exJa: "",
-          note: r.note,
-          kind: "詰まった文",
-          deck: trim(deck.name) || did
-        });
+    return sunkanStarCards(builtin.concat(user), added, stars);
+  });
+}
+/* デッキ一覧・足した文・★ から札を組み立てる。
+   素材が localStorage から来ても書き出しファイルから来ても、ここから先は同じ。 */
+function sunkanStarCards(decks, added, stars){
+  var seen = {}, out = [];
+  (Array.isArray(decks) ? decks : []).forEach(function(deck){
+    if (!deck || typeof deck !== "object") return;
+    var did = trim(deck.id); if (!did || seen[did]) return;
+    seen[did] = true;
+    var starred = stars[did];
+    if (!Array.isArray(starred) || !starred.length) return;   // 星が無いデッキは用が無い
+    var mark = {}; starred.forEach(function(id){ mark[id] = 1; });
+    sunkanRecordIds(deck, added).forEach(function(r){
+      if (!mark[r.id]) return;
+      out.push({
+        uid: "sunkan:" + did + ":" + r.id,
+        src: "sunkan",
+        en: r.en, ja: r.ja,
+        exEn: "", exJa: "",
+        note: r.note,
+        kind: "詰まった文",
+        deck: trim(deck.name) || did
       });
     });
-    return out;
   });
+  return out;
 }
 
 /* --- BOOKSHELF ----------------------------------------------------------
@@ -751,7 +756,10 @@ function booksToCards(books){
 
 /* --- Grammer-dict ------------------------------------------------------- */
 function pullGrammar(){
-  var arr = lsJSON("grammar-dict-user-v1", []);
+  return grammarCards(lsJSON("grammar-dict-user-v1", []));
+}
+/* 構文の配列 → 札。localStorage からでも書き出しファイルからでも同じ形で来る */
+function grammarCards(arr){
   if (!Array.isArray(arr)) return [];
   var out = [];
   arr.forEach(function(it){
@@ -783,9 +791,184 @@ var SOURCES = {
   bookshelf: { label:"BOOKSHELF",     short:"洋書", url:"../BOOKSHELF/",     pull: pullBookshelf,
                where:"IndexedDB bookshelf と、Gist の index.json（本文のハイライト）" },
   grammar:   { label:"Grammer-dict",  short:"構文", url:"../Grammer-dict/",  pull: pullGrammar,
-               where:"localStorage grammar-dict-user-v1（このアプリには同期が無い）" }
+               where:"localStorage grammar-dict-user-v1（同期が無いので、同じ入れ物か書き出しファイルから）" }
 };
 var SRC_ORDER = ["mydict", "sunkan", "bookshelf", "grammar"];
+
+/* ==========================================================================
+   ③ 各アプリの「書き出し」ファイルから取り込む
+
+   ①localStorage/IndexedDB を直に読む道は、iOS で入れ物が分かれていると
+   使えない。②Gist から読む道は、向こうのアプリに同期が設定してあって、
+   こちらに GitHub トークンがあることが前提になる。どちらも塞がっている
+   ことがあるので、各アプリの「書き出す」で出た JSON をそのまま読む道を足す。
+   トークンも通信も要らず、ファイルアプリ越しに入れ物の壁を越えられる。
+   Grammer-dict を含めて 4 アプリぜんぶが対象。
+
+   書き出しの形（実物を確認したもの）:
+     My Dictionary  mydict-*.json        項目の裸の配列
+     瞬間英作文      sunkan-*.json        {app:'sunkan', decks, added, stars, …}
+     BOOKSHELF      bookshelf-*.json     本の裸の配列
+     Grammer-dict   grammar-dict-*.json  構文の裸の配列
+   ========================================================================== */
+
+/* 裸の配列は 3 つある。ファイル名は変えられていることがあるので、
+   中身の形でも見分けられるようにしておく。手がかりは
+     My Dictionary  要素に en がある
+     BOOKSHELF      要素に title と text がある
+     Grammer-dict   要素に h がある
+   1 件だけ見て決めると外れることがあるので、頭のほうを何件か見て多数決を採る。 */
+function sniffArrayExport(arr, filename){
+  var vote = { mydict:0, bookshelf:0, grammar:0 }, looked = 0;
+  for (var i = 0; i < arr.length && looked < 50; i++){
+    var it = arr[i];
+    if (!it || typeof it !== "object" || Array.isArray(it)) continue;
+    looked++;
+    /* 本を先に見る。本には title と text の両方がある */
+    if (typeof it.title === "string" && typeof it.text === "string") vote.bookshelf++;
+    else if (typeof it.en === "string") vote.mydict++;
+    else if (typeof it.h === "string") vote.grammar++;
+  }
+  var best = "", n = 0;
+  Object.keys(vote).forEach(function(k){ if (vote[k] > n){ n = vote[k]; best = k; } });
+  if (best) return best;
+
+  /* 中身が空、または見覚えの無い形。あとはファイル名だけが手がかり */
+  var name = String(filename || "").toLowerCase();
+  if (/grammar|grammer/.test(name)) return "grammar";
+  if (/bookshelf/.test(name))       return "bookshelf";
+  if (/mydict|dictionary/.test(name)) return "mydict";
+  return "";
+}
+
+/* 瞬間英作文の書き出しから札を作る。★の付いた文だけが要るので
+   para（パラフレ帳）と inbox は見ない。収録の 360 文は向こうのファイルに
+   入っていないので、こちらで data.js を読んで補う（loadSunkanBuiltin が非同期）。 */
+function sunkanCardsFromExport(d){
+  return loadSunkanBuiltin().then(function(builtin){
+    if (!Array.isArray(builtin)) builtin = [];
+    var user  = Array.isArray(d.decks) ? d.decks : [];
+    var added = (d.added && typeof d.added === "object") ? d.added : {};
+    var stars = (d.stars && typeof d.stars === "object") ? d.stars : {};
+    return { src:"sunkan", cards: sunkanStarCards(builtin.concat(user), added, stars) };
+  });
+}
+
+/* 書き出しファイル 1 つ ぶんを読んで {src, cards} にする。
+   見分けが付かなければ null。瞬間英作文だけ非同期が要るので、
+   全体を Promise で揃えて呼ぶ側を単純にしている。
+   札を作るところは、①②が使っている関数をそのまま呼ぶ。 */
+function parseSourceExport(text, filename){
+  var d;
+  try{ d = JSON.parse(text); }catch(e){ return Promise.resolve(null); }
+  if (d == null || typeof d !== "object") return Promise.resolve(null);
+
+  if (!Array.isArray(d)){
+    /* 瞬間英作文だけは、目印の付いたオブジェクトで出てくる */
+    if (d.app === "sunkan" || (d.stars && d.decks)) return sunkanCardsFromExport(d);
+    /* My Dictionary の Gist 形式 {items, tombstones} で渡されることもある */
+    if (Array.isArray(d.items)){
+      return Promise.resolve({ src:"mydict", cards: myDictCards(d.items, d.tombstones) });
+    }
+    return Promise.resolve(null);
+  }
+
+  var src = sniffArrayExport(d, filename);
+  /* 書き出しに墓標は入っていないので、消したものの一覧は空で渡す */
+  if (src === "mydict")    return Promise.resolve({ src:src, cards: myDictCards(d, []) });
+  if (src === "bookshelf") return Promise.resolve({ src:src, cards: booksToCards(d) });
+  if (src === "grammar")   return Promise.resolve({ src:src, cards: grammarCards(d) });
+  return Promise.resolve(null);
+}
+
+function readFileText(f){
+  return new Promise(function(res){
+    var fr = new FileReader();
+    fr.onload  = function(){ res(String(fr.result || "")); };
+    fr.onerror = function(){ res(""); };       // 読めないファイルは「空」として流す
+    try{ fr.readAsText(f); }catch(e){ res(""); }
+  });
+}
+
+/* 選ばれたファイルをぜんぶ読んで、手元の札に合流させる。
+
+   pullAll と違って、今回来なかった札を消す判定はしない。
+   書き出しファイルは 4 アプリのうち渡されたぶんだけの、部分的な情報なので、
+   「来なかった＝向こうで消された」とは言えない。
+   書き足した訳（gloss）にも触らない。あれはこちらの持ちもの。 */
+function importSourceFiles(files){
+  var list = Array.prototype.slice.call(files || []);
+  if (!list.length) return Promise.resolve();
+  toast(list.length > 1 ? list.length + " 件を読んでいます…" : "読んでいます…");
+
+  return list.reduce(function(p, f){
+    return p.then(function(acc){
+      return readFileText(f)
+        .then(function(t){ return t ? parseSourceExport(t, f.name) : null; })
+        .catch(function(){ return null; })
+        .then(function(r){
+          if (!r || !r.src || !Array.isArray(r.cards)){ acc.bad++; return acc; }
+          acc.hit[r.src] = (acc.hit[r.src] || 0) + r.cards.length;
+          unionCards(acc.cards, r.cards);      // 同じ札が二重に来ても uid で潰れる
+          return acc;
+        });
+    });
+  }, Promise.resolve({ cards:[], hit:{}, bad:0 })).then(function(acc){
+
+    if (!acc.cards.length){
+      toast(acc.bad ? "読めませんでした" : "取り込めるものがありませんでした");
+      return;
+    }
+    var now = Date.now(), fresh = 0;
+    var puts = acc.cards.map(function(c){
+      var old = ST.byUid[c.uid];
+      if (!old) fresh++;
+      c.addedAt = (old && old.addedAt) || now;   // いつ入ったかは引き継ぐ
+      /* ファイルから来た印。⟳（localStorage/Gist）はこの印の付いた札を消さない。
+         向こうの保存が中途半端に見えている入れ物で ⟳ を押しただけで、
+         せっかく読み込んだ札が「向こうで消された」扱いになると困る。
+         あとで ⟳ が同じ札を拾えば印の無い札で上書きされ、ふつうの扱いに戻る。 */
+      c.via = "file";
+      return c;
+    });
+    /* 切ってある置き場のファイルをわざわざ渡したなら、出したいということ。
+       入れたのに 1 枚も出てこない、を避けるために、その置き場だけ点ける */
+    var woke = [];
+    Object.keys(acc.hit).forEach(function(k){
+      if (acc.hit[k] && CFG.sources[k] === false){ CFG.sources[k] = true; woke.push(k); }
+    });
+    if (woke.length) save_cfg();
+
+    return DB.putAll("cards", puts).then(loadAll).then(function(){
+      buildQueue();
+      render();
+      var parts = SRC_ORDER.filter(function(k){ return acc.hit[k]; })
+        .map(function(k){ return SOURCES[k].short + " " + acc.hit[k]; });
+      var msg = parts.join("・") + "／新しく ＋" + fresh + " 件";
+      if (acc.bad) msg += "／" + acc.bad + " 件は読めず";
+      toast(msg);
+    });
+  }).catch(function(){
+    toast("読めませんでした");
+  });
+}
+
+/* ファイルを選ばせる。iOS の「ファイル」アプリからも選べる。
+   4 アプリぶんをまとめて渡せるように multiple にしてある。
+   このアプリ自身の書き出しを読む importJSON とは別物（あちらは予定と訳、こちらは札）。 */
+function pickSourceFiles(){
+  var inp = document.createElement("input");
+  inp.type = "file";
+  inp.accept = "application/json,.json";
+  inp.multiple = true;
+  inp.onchange = function(){
+    var fs = inp.files;
+    if (!fs || !fs.length) return;
+    closeCfg();
+    importSourceFiles(fs);
+  };
+  inp.click();
+}
 
 /* ==========================================================================
    出題モード
@@ -976,7 +1159,9 @@ function pullAll(silent){
             c.addedAt = old ? (old.addedAt || Date.now()) : Date.now();
             return c;
           });
-          var gone = prev.filter(function(c){ return !freshMap[c.uid]; });
+          /* 書き出しファイルから読んだ札は、ここでの消滅判定から外す。
+             ファイルは部分的な情報なので、⟳ に写らないことが消された証拠にならない。 */
+          var gone = prev.filter(function(c){ return !freshMap[c.uid] && c.via !== "file"; });
           dropped += gone.length;
 
           return DB.putAll("cards", puts).then(function(){
@@ -1250,20 +1435,36 @@ function emptyNoCards(){
   var ready = syncReady();
   return '<div class="empty"><div class="big">📥</div>' +
     "<h2>まだ何も入っていません</h2>" +
-    "<p>右上の ⟳ で、各アプリから項目を集めます。</p>" +
+    "<p>各アプリで<b>「書き出す」</b>を押して、出てきた .json を<br>" +
+    "ここで読み込むのが、いちばん確実です。</p>" +
+    '<button class="btn-wide" id="emptyFiles" style="max-width:300px;margin:16px auto 0">' +
+      "書き出したファイルを読み込む</button>" +
+    '<div style="font-size:11.5px;color:var(--dim);margin-top:7px">4 アプリぶんをまとめて選べます</div>' +
+
     '<div class="note-box" style="text-align:left;margin-top:18px">' +
-      "<b>空のままなら、別の入れ物から開いています。</b><br>" +
+      "<b>どこに「書き出す」があるか。</b><br>" +
+      "・My Dictionary … ☰ →「バックアップを書き出す」<br>" +
+      "・瞬間英作文 … ⚙ →「同期の設定」→「ファイルに書き出す」（★を付けた文が入ります）<br>" +
+      "・BOOKSHELF … 「同期とバックアップ」→「全部を書き出す（.json）」<br>" +
+      "・Grammer-dict … ＋ で開く画面のいちばん下 →「書き出す」<br><br>" +
+      "出したファイルは「ファイル」アプリに入るので、そこから選べます。" +
+      "トークンも通信も要りません。4 つとも渡せます。" +
+    "</div>" +
+
+    '<div class="note-box" style="text-align:left;margin-top:12px">' +
+      "<b>そもそも、なぜ空のままなのか。</b><br>" +
       "iOS はホーム画面に追加したアプリ・Safari・アプリ内ブラウザで、" +
       "保存領域がそれぞれ分かれます。別の側から開くと、各アプリの保存は" +
-      "丸ごと空に見えます。直し方は 2 つ。<br><br>" +
-      "① 項目を入れたのと<b>同じ側</b>から、このアプリも開く<br>" +
-      "② ⚙ で<b>同期を設定する</b>。Gist から読むようになるので、" +
-      "どの入れ物から開いても出てきます" +
-      (ready ? "" : "（いまは未設定）") +
-      "<br><br>ただし Grammer-dict は同期を持たないので、①でしか読めません。" +
+      "丸ごと空に見えます。ファイルなら「ファイル」アプリを通るので、" +
+      "この分かれ目を越えられます。<br><br>" +
+      "ほかに 2 つ。<br>" +
+      "① 項目を入れたのと<b>同じ側</b>から、このアプリも開いて右上の ⟳<br>" +
+      "② ⚙ で<b>同期を設定する</b>" + (ready ? "" : "（いまは未設定）") +
+      "。ただし GitHub のトークンが要りますし、" +
+      "Grammer-dict は同期を持たないので、この道では読めません。" +
     "</div>" +
     '<div class="row-play" style="justify-content:center;flex-wrap:wrap">' + links + "</div>" +
-    '<button class="btn-wide" id="emptyPull" style="max-width:280px;margin:18px auto 0">取り込む</button>' +
+    '<button class="mini" id="emptyPull" style="margin-top:14px">この端末の保存から取り込む</button>' +
   "</div>";
 }
 
@@ -1288,6 +1489,7 @@ function emptyDone(total){
 
 function wireEmpty(){
   var b = $("#emptyPull"); if (b) b.onclick = function(){ pullAll(false); };
+  var f = $("#emptyFiles"); if (f) f.onclick = pickSourceFiles;
   var m = $("#emptyMore");
   if (m) m.onclick = function(){
     /* 予定より早いぶんを、期限の近い順に少しだけ引っぱってくる */
@@ -1490,6 +1692,16 @@ function openCfg(){
       "元の中身は書き換えません。ここで書き足した訳と、いつ出すかの予定だけが、" +
       "このアプリの持ちものです。</div>" +
 
+    '<div class="fld"><label>各アプリの書き出しファイルから入れる</label>' +
+      '<div class="note-box" style="margin-bottom:10px">' +
+        "各アプリの「書き出す」で出した .json を、そのまま読みます。" +
+        "<b>トークンも通信も要りません。</b>Grammer-dict も含めて 4 アプリぜんぶが対象で、" +
+        "まとめて選べます。読んだぶんが足されるだけで、いまある札は消えません。" +
+      "</div>" +
+      '<button class="b-sec" id="cFiles" style="width:100%;padding:13px;border-radius:12px;' +
+        'font-weight:700;font-size:15px">ファイルを選ぶ（複数可）</button>' +
+    "</div>" +
+
     '<div class="fld"><label>同期<span style="float:right;color:' +
       (syncReady() ? (syncAuto() ? "var(--ok)" : "var(--warn)") : "var(--dim)") + '">' +
       (syncReady() ? (syncAuto() ? "自動ON" : "手動") : "未設定") + "</span></label>" +
@@ -1534,9 +1746,15 @@ function openCfg(){
       "</div>" +
     "</div>" +
 
-    '<div class="sheet-btns">' +
-      '<button class="b-sec" id="cExport">書き出す</button>' +
-      '<button class="b-sec" id="cImport">読み込む</button>' +
+    '<div class="fld"><label>このアプリの持ちもの（予定・書き足した訳・記録）</label>' +
+      '<div class="note-box" style="margin-bottom:10px">' +
+        "札そのものではなく、<b>いつ出すかの予定と、書き足した訳</b>を移すためのものです。" +
+        "端末を替えるときや、入れ物をまたぐときに使います。" +
+      "</div>" +
+      '<div class="sheet-btns" style="margin-top:0">' +
+        '<button class="b-sec" id="cExport">予定を書き出す</button>' +
+        '<button class="b-sec" id="cImport">予定を読み込む</button>' +
+      "</div>" +
     "</div>" +
     '<div class="sheet-btns" style="margin-top:9px">' +
       '<button class="b-sec" id="cReset" style="color:var(--bad)">予定をぜんぶ消す</button>' +
@@ -1569,6 +1787,7 @@ function openCfg(){
     buildQueue();
     render();
   };
+  $("#cFiles").onclick  = pickSourceFiles;
   $("#cExport").onclick = exportJSON;
   $("#cImport").onclick = importJSON;
   var adopt = $("#cAdopt");
