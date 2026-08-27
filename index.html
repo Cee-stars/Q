@@ -39,6 +39,7 @@ input,select,textarea{font:inherit;color:inherit}
 .icon-btn{width:38px;height:38px;border-radius:11px;background:var(--panel2);
           display:grid;place-items:center;font-size:16px;border:1px solid var(--line)}
 .icon-btn:active{transform:scale(.94)}
+.icon-btn[hidden]{display:none}   /* display:grid が hidden を打ち消すので明示する */
 .icon-btn[data-busy="1"]{opacity:.5}
 .icon-btn[data-warn="1"]{color:var(--bad);border-color:rgba(230,57,70,.5)}
 .tabs{display:flex;gap:4px;padding:0 10px 8px}
@@ -510,13 +511,19 @@ function pullMyDict(ctx){
    向こうと同じ手順で id を組み直す（収録分、アプリ内で足した分、の順）。 */
 var SUNKAN_DATA_URL = "../sunkan-333/assets/data.js";
 var SUNKAN_SEP = String.fromCharCode(1);   // 向こうの id 生成に使われている区切り
+var sunkanBuiltinLost = false;   // 収録セットを読めなかったか
 function loadSunkanBuiltin(){
   if (window.SUNKAN_DECKS) return Promise.resolve(window.SUNKAN_DECKS);
   return new Promise(function(res){
     var s = document.createElement("script");
     s.src = SUNKAN_DATA_URL;
-    s.onload  = function(){ res(window.SUNKAN_DECKS || []); };
-    s.onerror = function(){ res([]); };   // 取れなくても自作デッキは拾える
+    s.onload  = function(){
+      if (!window.SUNKAN_DECKS) sunkanBuiltinLost = true;
+      res(window.SUNKAN_DECKS || []);
+    };
+    /* 取れなくても自作セットの★は拾える。ただし収録セットの★は丸ごと落ちる。
+       黙って減ると気づけないので、旗を立てて取り込みの結果に出す。 */
+    s.onerror = function(){ sunkanBuiltinLost = true; res([]); };
     document.head.appendChild(s);
   });
 }
@@ -946,6 +953,8 @@ function importSourceFiles(files){
         .map(function(k){ return SOURCES[k].short + " " + acc.hit[k]; });
       var msg = parts.join("・") + "／新しく ＋" + fresh + " 件";
       if (acc.bad) msg += "／" + acc.bad + " 件は読めず";
+      if (sunkanBuiltinLost && acc.hit.sunkan != null)
+        msg += "／収録セットの★は引けませんでした";
       toast(msg);
     });
   }).catch(function(){
@@ -1185,6 +1194,9 @@ function pullAll(silent){
     if (stalled.length){
       msg.push(stalled.map(function(n){ return SOURCES[n].short; }).join("・") + " は読めず");
     }
+    if (sunkanBuiltinLost && CFG.sources.sunkan){
+      msg.push("収録セットの★は引けず");
+    }
     toast(msg.length ? msg.join(" / ") : "変わりなし");
   }).catch(function(){
     ST.pulling = false;
@@ -1352,11 +1364,12 @@ function cardNormal(e){
     }
     if (trim(c.note)) ans += '<div class="note">' + esc(c.note) + "</div>";
     if (speakText(c)){
+      /* 元のアプリへのリンクは置かない。ホーム画面に追加したアプリを使っていると、
+         同じ URL でも別の入れ物で開いて、空っぽのアプリが立ち上がる。
+         復習の役に立たないうえ、飛び先を見て「別のアプリだ」と誤解させるだけだった。 */
       ans += '<div class="row-play"><button class="mini" id="play">🔊 聞く</button>' +
              (trim(c.exEn) && trim(c.exEn) !== trim(c.en)
                ? '<button class="mini" id="playEx">🔊 例文</button>' : "") +
-             (SOURCES[c.src] ? '<a class="mini" href="' + esc(SOURCES[c.src].url) +
-                '" target="_blank" rel="noopener">元のアプリ</a>' : "") +
              "</div>";
     }
     ans += "</div>";
@@ -1394,8 +1407,6 @@ function cardGloss(e){
     "</div>" +
     '<div class="row-play">' +
       '<button class="mini" id="play">🔊 聞く</button>' +
-      (SOURCES[c.src] ? '<a class="mini" href="' + esc(SOURCES[c.src].url) +
-        '" target="_blank" rel="noopener">本で見る</a>' : "") +
     "</div>" +
     '<button class="btn-wide" id="glossSave">書き足して次へ</button>' +
     '<button class="mini" id="glossSkip" style="width:100%;margin-top:8px">とばす</button>' +
@@ -1428,6 +1439,8 @@ function wireCard(e){
 }
 
 function emptyNoCards(){
+  /* ここから各アプリへ飛べるようにはしておくが、ホーム画面に追加したアプリとは
+     別の入れ物が開く。中身が空でも壊れたわけではない、と先に言っておく。 */
   var links = SRC_ORDER.map(function(k){
     return '<a class="mini" href="' + esc(SOURCES[k].url) + '" target="_blank" rel="noopener">' +
            esc(SOURCES[k].label) + "</a>";
@@ -1463,7 +1476,10 @@ function emptyNoCards(){
       "。ただし GitHub のトークンが要りますし、" +
       "Grammer-dict は同期を持たないので、この道では読めません。" +
     "</div>" +
-    '<div class="row-play" style="justify-content:center;flex-wrap:wrap">' + links + "</div>" +
+    '<div style="font-size:11.5px;color:var(--dim);margin-top:16px;line-height:1.7">' +
+      "各アプリを開く（<b>ホーム画面のアプリとは別の入れ物</b>が開くので、<br>" +
+      "中身が空でも壊れたわけではありません）</div>" +
+    '<div class="row-play" style="justify-content:center;flex-wrap:wrap;margin-top:8px">' + links + "</div>" +
     '<button class="mini" id="emptyPull" style="margin-top:14px">この端末の保存から取り込む</button>' +
   "</div>";
 }
