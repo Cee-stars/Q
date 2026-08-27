@@ -40,6 +40,7 @@ input,select,textarea{font:inherit;color:inherit}
           display:grid;place-items:center;font-size:16px;border:1px solid var(--line)}
 .icon-btn:active{transform:scale(.94)}
 .icon-btn[data-busy="1"]{opacity:.5}
+.icon-btn[data-warn="1"]{color:var(--bad);border-color:rgba(230,57,70,.5)}
 .tabs{display:flex;gap:4px;padding:0 10px 8px}
 .tabs button{flex:1;padding:8px 4px;border-radius:10px;font-size:13.5px;color:var(--dim);
              font-weight:600}
@@ -194,6 +195,7 @@ main{max-width:640px;margin:0 auto;padding:14px}
 <header class="hd">
   <div class="hd-row">
     <h1>復習<b>キュー</b></h1>
+    <button class="icon-btn" id="btnSync" title="いま同期する" hidden>⇅</button>
     <button class="icon-btn" id="btnPull" title="各アプリから取り込む">⟳</button>
     <button class="icon-btn" id="btnCfg" title="設定">⚙</button>
   </div>
@@ -296,12 +298,15 @@ var DB = (function(){
   function open(){
     if (p) return p;
     p = new Promise(function(res, rej){
-      var r = indexedDB.open("revq", 1);
+      var r = indexedDB.open("revq", 2);
       r.onupgradeneeded = function(){
         var db = r.result;
         if (!db.objectStoreNames.contains("cards")) db.createObjectStore("cards", {keyPath:"uid"});
         if (!db.objectStoreNames.contains("srs"))   db.createObjectStore("srs",   {keyPath:"key"});
         if (!db.objectStoreNames.contains("log"))   db.createObjectStore("log",   {keyPath:"ts"});
+        /* 書き足した訳は札とは別に持つ。札は取り込みのたびに作り直されるし、
+           元のアプリから消えれば消える。訳はこちらの持ちものなので巻き添えにしない。 */
+        if (!db.objectStoreNames.contains("gloss")) db.createObjectStore("gloss", {keyPath:"uid"});
       };
       r.onsuccess = function(){ res(r.result); };
       r.onerror = function(){ rej(r.error); };
@@ -661,14 +666,15 @@ var MODES = {
 };
 var MODE_ORDER = ["produce", "recognize", "listen"];
 
-function meaningOf(c){ return trim(c.gloss) || trim(c.ja); }
+function glossOf(c){ var g = ST.gloss[c.uid]; return g ? trim(g.gloss) : ""; }
+function meaningOf(c){ return glossOf(c) || trim(c.ja); }
 /* 訳がまだ無い札。出題する前に、意味を書き足してもらう */
 function needsGloss(c){ return !meaningOf(c); }
 
 function modesFor(c){
   if (needsGloss(c)) return [];
   var m = [];
-  if (trim(c.ja)   || trim(c.gloss)) m.push("produce");
+  if (trim(c.ja) || glossOf(c)) m.push("produce");
   if (trim(c.en))   m.push("recognize");
   if (trim(c.en) || trim(c.exEn)) m.push("listen");
   return m.filter(function(k){ return CFG.modes[k]; });
@@ -680,6 +686,7 @@ function modesFor(c){
 var ST = {
   cards: [],        // 取り込んだ札
   byUid: {},
+  gloss: {},        // uid -> 書き足した訳
   srs: {},          // key -> 予定
   log: [],          // 採点の記録
   queue: [],        // 今日ぶんの並び
@@ -692,14 +699,30 @@ var ST = {
 };
 
 function loadAll(){
-  return Promise.all([DB.all("cards"), DB.all("srs"), DB.all("log")])
+  return Promise.all([DB.all("cards"), DB.all("srs"), DB.all("log"), DB.all("gloss")])
     .then(function(r){
       ST.cards = r[0] || [];
       ST.srs = {};
       (r[1] || []).forEach(function(s){ ST.srs[s.key] = s; });
       ST.log = r[2] || [];
+      ST.gloss = {};
+      (r[3] || []).forEach(function(g){ ST.gloss[g.uid] = g; });
       reindex();
+      return migrateGloss();
     });
+}
+/* 以前は訳を札の中に入れていた。別ストアへ移す。1 度きり */
+function migrateGloss(){
+  var moved = [];
+  ST.cards.forEach(function(c){
+    if (trim(c.gloss) && !ST.gloss[c.uid]){
+      var row = { uid: c.uid, gloss: trim(c.gloss), glossAt: c.addedAt || Date.now() };
+      ST.gloss[c.uid] = row;
+      moved.push(row);
+    }
+  });
+  if (!moved.length) return Promise.resolve();
+  return DB.putAll("gloss", moved);
 }
 function reindex(){
   ST.byUid = {};
@@ -814,7 +837,6 @@ function pullAll(silent){
             freshMap[c.uid] = 1;
             var old = prevMap[c.uid];
             if (!old) added++;
-            c.gloss   = old ? (old.gloss || "") : "";   // 書き足した訳は引き継ぐ
             c.addedAt = old ? (old.addedAt || Date.now()) : Date.now();
             return c;
           });
@@ -866,6 +888,7 @@ function grade(g){
     toast("記録を保存できませんでした");
   });
 
+  scheduleAutoSync();
   if (g === 0) requeue({ card: e.card, mode: e.mode, srs: s });
   next();
 }
@@ -874,8 +897,10 @@ function saveGloss(text){
   if (!e || e.mode !== "gloss") return;
   var v = trim(text);
   if (!v){ toast("意味を入れてください"); return; }
-  e.card.gloss = v;
-  DB.put("cards", e.card).catch(function(){ toast("保存できませんでした"); });
+  var row = { uid: e.card.uid, gloss: v, glossAt: Date.now() };
+  ST.gloss[row.uid] = row;
+  DB.put("gloss", row).catch(function(){ toast("保存できませんでした"); });
+  scheduleAutoSync();
   toast("書き足しました");
   next();
 }
@@ -889,6 +914,11 @@ function next(){
 /* ==========================================================================
    画面
    ========================================================================== */
+function fmtStamp(ts){
+  if (!ts) return "";
+  var d = new Date(+ts), p = function(n){ return (n < 10 ? "0" : "") + n; };
+  return (d.getMonth()+1) + "/" + d.getDate() + " " + p(d.getHours()) + ":" + p(d.getMinutes());
+}
 function fmtDue(due){
   var d = Math.round((due - TODAY()) / DAY);
   if (d <= 0) return "今日";
@@ -1038,7 +1068,7 @@ function cardGloss(e){
     '<div class="gloss">' +
       "<label>この語の意味。これを入れると、明日から出題に回ります</label>" +
       '<input id="glossIn" type="text" autocomplete="off" autocapitalize="off" ' +
-        'placeholder="日本語で短く" value="' + esc(c.gloss || "") + '">' +
+        'placeholder="日本語で短く" value="' + esc(glossOf(c)) + '">' +
     "</div>" +
     '<div class="row-play">' +
       '<button class="mini" id="play">🔊 聞く</button>' +
@@ -1173,7 +1203,7 @@ function renderList(){
   var rows = ST.cards.filter(function(c){
     if (ST.filterSrc !== "all" && c.src !== ST.filterSrc) return false;
     if (!q) return true;
-    return (c.en + " " + c.ja + " " + (c.gloss||"") + " " + (c.note||"")).toLowerCase().indexOf(q) >= 0;
+    return (c.en + " " + c.ja + " " + glossOf(c) + " " + (c.note||"")).toLowerCase().indexOf(q) >= 0;
   });
   rows.sort(function(a, b){ return (b.addedAt||0) - (a.addedAt||0); });
 
@@ -1319,6 +1349,42 @@ function openCfg(){
       "元の中身は書き換えません。ここで書き足した訳と、いつ出すかの予定だけが、" +
       "このアプリの持ちものです。</div>" +
 
+    '<div class="fld"><label>同期<span style="float:right;color:' +
+      (syncReady() ? (syncAuto() ? "var(--ok)" : "var(--warn)") : "var(--dim)") + '">' +
+      (syncReady() ? (syncAuto() ? "自動ON" : "手動") : "未設定") + "</span></label>" +
+      '<div class="note-box" style="margin-bottom:12px">' +
+        "同期をONにすると、<b>予定・書き足した訳・記録</b>が GitHub の" +
+        "「シークレットGist」に置かれます。<b>URLを知っている人は見られる</b>ので、" +
+        "完全に非公開ではありません。トークンはこの端末にだけ保存されます。<br><br>" +
+        "札そのものは同期しません。別の端末では、先に元のアプリを同期してから" +
+        "取り込んでください。" +
+      "</div>" +
+      (mydictSyncAvailable() && !syncReady()
+        ? '<button class="b-sec" id="cAdopt" style="width:100%;padding:12px;border-radius:12px;' +
+          'font-weight:700;margin-bottom:10px">My Dictionary と同じ置き場を使う</button>'
+        : "") +
+      '<div style="font-size:11.5px;color:var(--dim);margin-bottom:5px">GitHub トークン（gist 権限）</div>' +
+      '<input type="password" id="cToken" placeholder="ghp_…" ' +
+        'autocomplete="off" spellcheck="false" value="' + esc(syncToken()) + '" ' +
+        'style="width:100%;padding:11px 12px;border-radius:11px;background:var(--panel2);' +
+        'border:1px solid var(--line);font-size:15px;margin-bottom:8px">' +
+      '<div style="font-size:11.5px;color:var(--dim);margin:10px 0 5px">Gist ID（空なら「Gistを作る」で作れます）</div>' +
+      '<input type="text" id="cGist" placeholder="32文字のID" ' +
+        'autocomplete="off" spellcheck="false" value="' + esc(syncGist()) + '" ' +
+        'style="width:100%;padding:11px 12px;border-radius:11px;background:var(--panel2);' +
+        'border:1px solid var(--line);font-size:15px">' +
+      '<div class="toggles" style="margin-top:10px">' +
+        '<div class="tg"><input type="checkbox" id="cAuto"' + (syncAuto() ? " checked" : "") + ">" +
+          '<div class="tx"><b>自動で同期する</b><small>採点や書き足しのあと、まとめて送る' +
+          (lsGet(SYNC_LAST_KEY) ? "／最後の同期 " + esc(fmtStamp(+lsGet(SYNC_LAST_KEY))) : "") +
+          "</small></div></div>" +
+      "</div>" +
+      '<div class="sheet-btns" style="margin-top:10px">' +
+        '<button class="b-sec" id="cSyncNow">いま同期する</button>' +
+        '<button class="b-sec" id="cGistNew">Gistを作る</button>' +
+      "</div>" +
+    "</div>" +
+
     '<div class="sheet-btns">' +
       '<button class="b-sec" id="cExport">書き出す</button>' +
       '<button class="b-sec" id="cImport">読み込む</button>' +
@@ -1340,6 +1406,10 @@ function openCfg(){
     MODE_ORDER.forEach(function(k){ CFG.modes[k] = $("#m_" + k).checked; });
     CFG.autoPull  = $("#cAutoPull").checked;
     CFG.autoSpeak = $("#cAutoSpeak").checked;
+    lsSet(SYNC_TOKEN_KEY, trim($("#cToken").value));
+    lsSet(SYNC_GIST_KEY,  trim($("#cGist").value));
+    lsSet(SYNC_AUTO_KEY,  $("#cAuto").checked ? "1" : "");
+    updateSyncChip("");
     if (!MODE_ORDER.some(function(k){ return CFG.modes[k]; })){
       CFG.modes.produce = true;
       toast("モードは1つ以上いります");
@@ -1351,6 +1421,32 @@ function openCfg(){
   };
   $("#cExport").onclick = exportJSON;
   $("#cImport").onclick = importJSON;
+  var adopt = $("#cAdopt");
+  if (adopt) adopt.onclick = function(){
+    if (!adoptMyDictSync()){ toast("My Dictionary の同期設定が見つかりません"); return; }
+    lsSet(SYNC_AUTO_KEY, "1");
+    openCfg();
+    toast("同じ置き場を使います");
+    trySync(false);
+  };
+  $("#cSyncNow").onclick = function(){
+    lsSet(SYNC_TOKEN_KEY, trim($("#cToken").value));
+    lsSet(SYNC_GIST_KEY,  trim($("#cGist").value));
+    trySync(false).then(function(){ if (syncReady()) openCfg(); });
+  };
+  $("#cGistNew").onclick = function(){
+    var tk = trim($("#cToken").value);
+    if (!tk){ toast("先にトークンを入れてください"); return; }
+    lsSet(SYNC_TOKEN_KEY, tk);
+    toast("作っています…");
+    gistCreate(tk).then(function(id){
+      lsSet(SYNC_GIST_KEY, id);
+      lsSet(SYNC_AUTO_KEY, "1");
+      openCfg();
+      toast("作りました");
+      updateSyncChip("");
+    }).catch(function(e){ toast("作れませんでした: " + ((e && e.message) || "通信エラー")); });
+  };
   $("#cReset").onclick = function(){
     if (!confirm("いつ出すかの予定と、やった記録を消します。札そのものは残ります。よろしいですか？")) return;
     Promise.all([DB.clear("srs"), DB.clear("log")]).then(function(){
@@ -1367,8 +1463,7 @@ function closeCfg(){ $("#cfgScrim").classList.remove("on"); }
 function exportJSON(){
   var payload = {
     v: 1, at: Date.now(), settings: CFG,
-    gloss: ST.cards.filter(function(c){ return trim(c.gloss); })
-                   .map(function(c){ return { uid:c.uid, gloss:c.gloss }; }),
+    gloss: Object.keys(ST.gloss).map(function(k){ return ST.gloss[k]; }),
     srs: Object.keys(ST.srs).map(function(k){ return ST.srs[k]; }),
     log: ST.log
   };
@@ -1401,8 +1496,10 @@ function importJSON(){
       }
       if (Array.isArray(d.gloss)){
         d.gloss.forEach(function(g){
-          var c = g && ST.byUid[g.uid];
-          if (c && !trim(c.gloss) && trim(g.gloss)){ c.gloss = g.gloss; jobs.push(DB.put("cards", c)); }
+          if (!g || !g.uid || !trim(g.gloss)) return;
+          var cur = ST.gloss[g.uid];
+          if (cur && (cur.glossAt || 0) >= (g.glossAt || 0)) return;
+          ST.gloss[g.uid] = g; jobs.push(DB.put("gloss", g));
         });
       }
       if (Array.isArray(d.log)){
@@ -1421,6 +1518,215 @@ function importJSON(){
   inp.click();
 }
 
+
+/* ==========================================================================
+   同期（GitHub のシークレット Gist）
+
+   同期するのは、このアプリの持ちもの＝予定・書き足した訳・記録の 3 つだけ。
+   札そのものは同期しない。札は取り込みのたびに各アプリから作り直されるもので、
+   両側で足し引きすると「元で消したのに復活する」が起きる。
+   別の端末では、先に元のアプリ側を同期してから取り込めばよい。
+
+   置き場は My Dictionary と同じ Gist の、別ファイル。
+   Gist の PATCH は渡したファイルだけを触るので、互いの書き込みは踏まない。
+   ========================================================================== */
+var SYNC_TOKEN_KEY = "revq.sync.token";
+var SYNC_GIST_KEY  = "revq.sync.gistId";
+var SYNC_AUTO_KEY  = "revq.sync.auto";
+var SYNC_LAST_KEY  = "revq.sync.lastSync";
+var SYNC_FILE      = "revq-data.json";
+var MYDICT_TOKEN_KEY = "mydict.sync.token";
+var MYDICT_GIST_KEY  = "mydict.sync.gistId";
+var REQ_TIMEOUT_MS = 20000;   // 返事が来ないまま固まらせない
+var BUSY_MAX_MS    = 60000;   // 「同期中」が居座ったら諦めて次を受け付ける
+var LOG_KEEP       = 5000;    // 記録を持ちすぎない
+var syncBusy = false, syncBusyAt = 0, syncTimer = null;
+
+function lsGet(k){ try{ return localStorage.getItem(k) || ""; }catch(e){ return ""; } }
+function lsSet(k, v){ try{ if (v) localStorage.setItem(k, v); else localStorage.removeItem(k); }catch(e){} }
+function syncToken(){ return lsGet(SYNC_TOKEN_KEY); }
+function syncGist(){ return lsGet(SYNC_GIST_KEY); }
+function syncReady(){ return !!(syncToken() && syncGist()); }
+function syncAuto(){ return lsGet(SYNC_AUTO_KEY) === "1"; }
+
+/* My Dictionary がもう同期しているなら、その置き場をそのまま使う。
+   同じ端末の同じ localStorage にあるので、入れ直してもらう必要がない。 */
+function mydictSyncAvailable(){ return !!(lsGet(MYDICT_TOKEN_KEY) && lsGet(MYDICT_GIST_KEY)); }
+function adoptMyDictSync(){
+  if (!mydictSyncAvailable()) return false;
+  lsSet(SYNC_TOKEN_KEY, lsGet(MYDICT_TOKEN_KEY));
+  lsSet(SYNC_GIST_KEY,  lsGet(MYDICT_GIST_KEY));
+  return true;
+}
+
+function gistErrorMessage(status){
+  if (status === 401) return "トークンが無効です";
+  if (status === 404) return "Gist IDが見つかりません";
+  if (status === 403) return "GitHubのアクセス制限に達しました（しばらくしてから再試行してください）";
+  return "通信エラー（" + status + "）";
+}
+/* 返事が来ないと約束が永久に決まらず、次の同期が素通りしてしまう */
+function withTimeout(promise, ms){
+  return new Promise(function(resolve, reject){
+    var settled = false;
+    var timer = setTimeout(function(){
+      if (settled) return;
+      settled = true;
+      reject(new Error("返事がありませんでした（電波が弱いかもしれません）"));
+    }, ms);
+    promise.then(function(v){
+      if (settled) return; settled = true; clearTimeout(timer); resolve(v);
+    }, function(e){
+      if (settled) return; settled = true; clearTimeout(timer); reject(e);
+    });
+  });
+}
+function ghFetch(url, method, token, body){
+  var headers = { "Authorization":"token " + token, "Accept":"application/vnd.github+json" };
+  if (body) headers["Content-Type"] = "application/json";
+  return withTimeout(fetch(url, {method:method, headers:headers, body:body}), REQ_TIMEOUT_MS)
+    .catch(function(e){ throw new Error("GitHubに届きませんでした（" + ((e && e.message) || "理由不明") + "）"); })
+    .then(function(res){
+      if (!res.ok) throw new Error(gistErrorMessage(res.status));
+      return res.json();
+    });
+}
+
+function localPayload(){
+  var gloss = Object.keys(ST.gloss).map(function(k){ return ST.gloss[k]; });
+  var srs = Object.keys(ST.srs).map(function(k){ return ST.srs[k]; });
+  return { app:"revq", v:1, at:Date.now(), srs:srs, gloss:gloss, log:ST.log };
+}
+function gistCreate(token){
+  var body = JSON.stringify({
+    description: "復習キュー sync data",
+    public: false,
+    files: (function(){ var f = {}; f[SYNC_FILE] = { content: JSON.stringify(localPayload(), null, 2) }; return f; })()
+  });
+  return ghFetch("https://api.github.com/gists", "POST", token, body).then(function(j){ return j.id; });
+}
+function gistGetRevq(gistId, token){
+  return ghFetch("https://api.github.com/gists/" + encodeURIComponent(gistId), "GET", token).then(function(json){
+    var f = json.files && json.files[SYNC_FILE];
+    if (!f) return { srs:[], gloss:[], log:[] };   // まだこのアプリのファイルが無いだけ
+
+    /* 1MB を超えると Gist の API は content を途中で切って返す。切られたまま
+       読むと JSON にならず、「向こうは空だ」と誤解して相手を消してしまう。 */
+    var truncated = !!(f.truncated && f.raw_url);
+    var body = truncated
+      ? fetch(f.raw_url).then(function(r){
+          if (!r.ok) throw new Error("同期データを読み込めませんでした");
+          return r.text();
+        }, function(){ throw new Error("同期データを読み込めませんでした"); })
+      : Promise.resolve(f.content || "");
+
+    return body.then(function(text){
+      if (!text){
+        if (truncated) throw new Error("同期データを読み込めませんでした");
+        return { srs:[], gloss:[], log:[] };
+      }
+      var parsed;
+      try{ parsed = JSON.parse(text); }
+      catch(e){
+        /* ここで空を返すと、壊れている向こうを自分のデータで塗りつぶしてしまう */
+        throw new Error("同期データが読めません（上書きせずに中止しました）");
+      }
+      return {
+        srs:   Array.isArray(parsed.srs)   ? parsed.srs   : [],
+        gloss: Array.isArray(parsed.gloss) ? parsed.gloss : [],
+        log:   Array.isArray(parsed.log)   ? parsed.log   : []
+      };
+    });
+  });
+}
+function gistPutRevq(gistId, token){
+  var files = {};
+  files[SYNC_FILE] = { content: JSON.stringify(localPayload(), null, 2) };
+  return ghFetch("https://api.github.com/gists/" + encodeURIComponent(gistId), "PATCH", token,
+                 JSON.stringify({ files: files }));
+}
+
+/* 突き合わせ。予定は最後にやった時刻、訳は書いた時刻で新しいほうを採る。
+   記録は時刻がそのまま鍵なので、足すだけでよい。 */
+function mergeRemote(remote){
+  var changed = { srs:[], gloss:[], log:[] };
+
+  (remote.srs || []).forEach(function(r){
+    if (!r || !r.key) return;
+    var cur = ST.srs[r.key];
+    if (cur && (cur.last || 0) >= (r.last || 0)) return;
+    ST.srs[r.key] = r; changed.srs.push(r);
+  });
+
+  (remote.gloss || []).forEach(function(g){
+    if (!g || !g.uid || !trim(g.gloss)) return;
+    var cur = ST.gloss[g.uid];
+    if (cur && (cur.glossAt || 0) >= (g.glossAt || 0)) return;
+    ST.gloss[g.uid] = g; changed.gloss.push(g);
+  });
+
+  var have = {};
+  ST.log.forEach(function(r){ have[r.ts] = 1; });
+  (remote.log || []).forEach(function(r){
+    if (!r || !r.ts || have[r.ts]) return;
+    have[r.ts] = 1; ST.log.push(r); changed.log.push(r);
+  });
+  if (ST.log.length > LOG_KEEP){
+    ST.log.sort(function(a, b){ return a.ts - b.ts; });
+    ST.log = ST.log.slice(ST.log.length - LOG_KEEP);
+  }
+
+  return Promise.all([
+    changed.srs.length   ? DB.putAll("srs", changed.srs)     : null,
+    changed.gloss.length ? DB.putAll("gloss", changed.gloss) : null,
+    changed.log.length   ? DB.putAll("log", changed.log)     : null
+  ]).then(function(){ return changed; });
+}
+
+function trySync(silent){
+  var token = syncToken(), gistId = syncGist();
+  if (!token || !gistId){ if (!silent) toast("同期が未設定です"); return Promise.resolve(); }
+  if (navigator.onLine === false){ if (!silent) toast("オフラインです"); return Promise.resolve(); }
+  if (syncBusy && Date.now() - syncBusyAt < BUSY_MAX_MS){
+    if (!silent) toast("同期中です");
+    return Promise.resolve();
+  }
+  syncBusy = true; syncBusyAt = Date.now();
+  updateSyncChip("…");
+
+  return gistGetRevq(gistId, token)
+    .then(mergeRemote)
+    .then(function(changed){
+      return gistPutRevq(gistId, token).then(function(){ return changed; });
+    })
+    .then(function(changed){
+      lsSet(SYNC_LAST_KEY, String(Date.now()));
+      var n = changed.srs.length + changed.gloss.length + changed.log.length;
+      if (n){ buildQueue(); }
+      render();
+      if (!silent) toast(n ? "同期しました（" + n + " 件届きました）" : "同期しました");
+    })
+    .catch(function(err){
+      /* 通信の失敗は手元のデータに触らない。分かるように出すだけ */
+      if (!silent) toast("同期に失敗しました: " + ((err && err.message) || "通信エラー"));
+      updateSyncChip("!");
+    })
+    .then(function(){ syncBusy = false; updateSyncChip(""); });
+}
+function scheduleAutoSync(){
+  if (!syncAuto() || !syncReady()) return;
+  clearTimeout(syncTimer);
+  /* 採点は続けて何回も起きる。まとめて 1 回にする */
+  syncTimer = setTimeout(function(){ trySync(true); }, 3000);
+}
+function updateSyncChip(mark){
+  var el = $("#btnSync");
+  if (!el) return;
+  el.dataset.busy = mark === "…" ? "1" : "";
+  el.dataset.warn = mark === "!" ? "1" : "";
+  el.hidden = !syncReady();
+}
+
 /* ==========================================================================
    起動
    ========================================================================== */
@@ -1428,7 +1734,15 @@ Array.prototype.forEach.call($("#tabs").children, function(b){
   b.onclick = function(){ ST.view = b.dataset.v; SPEECH.stop(); render(); };
 });
 $("#btnPull").onclick = function(){ pullAll(false); };
+$("#btnSync").onclick = function(){ trySync(false); };
 $("#btnCfg").onclick = openCfg;
+/* 画面を離れるときに、送り残しを片づける */
+document.addEventListener("visibilitychange", function(){
+  if (document.visibilityState === "hidden" && syncAuto() && syncReady()){
+    clearTimeout(syncTimer);
+    trySync(true);
+  }
+});
 $("#cfgScrim").onclick = function(e){ if (e.target === $("#cfgScrim")) closeCfg(); };
 document.addEventListener("keydown", function(e){
   if (e.key === "Escape" && $("#cfgScrim").classList.contains("on")) closeCfg();
@@ -1440,10 +1754,17 @@ document.addEventListener("keydown", function(e){
   if (/^[1-4]$/.test(e.key) && ST.revealed) grade(+e.key - 1);
 });
 
+/* My Dictionary がもう同期しているなら、黙って同じ置き場に相乗りして自動ONにする。
+   トークンを入れ直してもらう理由が無い。 */
+if (!syncReady() && adoptMyDictSync()) lsSet(SYNC_AUTO_KEY, "1");
+
 loadAll().then(function(){
   buildQueue();
   render();
-  if (CFG.autoPull) return pullAll(true);
+  updateSyncChip("");
+  return (CFG.autoPull ? pullAll(true) : Promise.resolve()).then(function(){
+    if (syncAuto() && syncReady()) return trySync(true);
+  });
 }).catch(function(){
   toast("保存領域を開けませんでした");
   render();
