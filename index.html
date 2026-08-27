@@ -407,6 +407,62 @@ var SPEECH = (function(){
    どれも読むだけ。書き戻しはしない。
    ========================================================================== */
 
+/* ------------------------------------------------------------------
+   iOS はホーム画面に追加したアプリ、Safari、アプリ内ブラウザで
+   保存領域が別々になる。別の入れ物から開くと、各アプリの
+   localStorage も IndexedDB も丸ごと空に見えて、何も拾えない。
+
+   同期が設定してあれば、同じ素材を Gist からも読める。ネットワーク越し
+   なので入れ物の分かれ目を越える。localStorage と突き合わせて、
+   両方にあるものは手元を優先し、片方にしか無いものは足す。
+   ------------------------------------------------------------------ */
+var BS_GIST_KEY = "revq.src.bookshelfGist";
+var MYDICT_FILE   = "mydict-data.json";
+var SUNKAN_FILE   = "sunkan-data.json";
+var BOOKSHELF_IDX = "index.json";
+
+function gistFetchFiles(gistId, token){
+  return ghFetch("https://api.github.com/gists/" + encodeURIComponent(gistId), "GET", token)
+    .then(function(json){ return json.files || {}; });
+}
+function fileText(f){
+  if (!f) return Promise.resolve("");
+  if (!f.truncated) return Promise.resolve(f.content || "");
+  if (!f.raw_url) return Promise.resolve("");
+  return fetch(f.raw_url).then(function(r){ return r.ok ? r.text() : ""; },
+                              function(){ return ""; });
+}
+/* 素材を読むだけなので、壊れていたら「無い」として扱ってよい。
+   手元のぶんは残るし、こちらから書き戻すことも無い。 */
+function fileJSON(files, name){
+  return fileText(files && files[name]).then(function(t){
+    if (!t) return null;
+    try{ return JSON.parse(t); }catch(e){ return null; }
+  });
+}
+function fetchSourceGists(){
+  var token = syncToken(), main = syncGist();
+  if (!token || !main) return Promise.resolve({ main:null, bookshelf:null });
+  /* BOOKSHELF は自分の Gist を使う。同じ入れ物にいれば向こうの設定が読める */
+  var bsId = lsGet(BS_GIST_KEY) || lsGet("syncGist");
+  return Promise.all([
+    gistFetchFiles(main, token).catch(function(){ return null; }),
+    (bsId && bsId !== main)
+      ? gistFetchFiles(bsId, token).catch(function(){ return null; })
+      : Promise.resolve(null)
+  ]).then(function(r){
+    return { main: r[0], bookshelf: r[1] || r[0] };
+  });
+}
+/* 同じ札が両方から来たら手元を採る。中身は同じはずだが、
+   取り込み直後のものを基準にしておくほうが後の突き合わせが素直 */
+function unionCards(mine, theirs){
+  var seen = {};
+  mine.forEach(function(c){ seen[c.uid] = 1; });
+  theirs.forEach(function(c){ if (!seen[c.uid]){ seen[c.uid] = 1; mine.push(c); } });
+  return mine;
+}
+
 function lsJSON(key, fallback){
   try{
     var raw = localStorage.getItem(key);
@@ -417,13 +473,16 @@ function lsJSON(key, fallback){
 }
 
 /* --- My Dictionary ------------------------------------------------------ */
-function pullMyDict(){
-  var arr = lsJSON("mydict.v1", []);
-  if (!Array.isArray(arr)) return [];
+function myDictCards(items, tombstones){
+  var dead = {};
+  (Array.isArray(tombstones) ? tombstones : []).forEach(function(t){
+    if (t && t.id) dead[t.id] = 1;
+  });
   var out = [];
-  arr.forEach(function(it){
+  (Array.isArray(items) ? items : []).forEach(function(it){
     if (!it || typeof it !== "object") return;
     var en = trim(it.en); if (!en) return;
+    if (trim(it.id) && dead[trim(it.id)]) return;   // 向こうで消したものは連れてこない
     out.push({
       uid: "mydict:" + (trim(it.id) || hashString(en)),
       src: "mydict",
@@ -436,6 +495,14 @@ function pullMyDict(){
     });
   });
   return out;
+}
+function pullMyDict(ctx){
+  var out = myDictCards(lsJSON("mydict.v1", []), lsJSON("mydict.sync.tombstones", []));
+  if (!ctx || !ctx.main) return out;
+  return fileJSON(ctx.main, MYDICT_FILE).then(function(d){
+    if (!d) return out;
+    return unionCards(out, myDictCards(d.items, d.tombstones));
+  });
 }
 
 /* --- 瞬間英作文 ---------------------------------------------------------
@@ -470,8 +537,45 @@ function sunkanRecordIds(deck, added){
   }
   return out;
 }
-function pullSunkan(){
-  return loadSunkanBuiltin().then(function(builtin){
+/* 手元と向こうを、札に組み立てる前の段階で合わせる。
+   デッキは手元優先、★は片方にでも付いていれば拾う */
+function mergeSunkanDecks(mine, theirs){
+  var out = [], seen = {};
+  (Array.isArray(mine) ? mine : []).concat(Array.isArray(theirs) ? theirs : [])
+    .forEach(function(d){
+      if (!d || typeof d !== "object") return;
+      var id = trim(d.id); if (!id || seen[id]) return;
+      seen[id] = 1; out.push(d);
+    });
+  return out;
+}
+function mergeSunkanAdded(mine, theirs){
+  var out = {};
+  [theirs, mine].forEach(function(src){          // 後に置いたほう（手元）が勝つ
+    if (!src || typeof src !== "object") return;
+    Object.keys(src).forEach(function(k){ if (Array.isArray(src[k])) out[k] = src[k]; });
+  });
+  return out;
+}
+function mergeSunkanStars(mine, theirs){
+  var out = {};
+  [mine, theirs].forEach(function(src){
+    if (!src || typeof src !== "object") return;
+    Object.keys(src).forEach(function(k){
+      if (!Array.isArray(src[k])) return;
+      var bag = out[k] || (out[k] = []), seen = {};
+      bag.forEach(function(x){ seen[x] = 1; });
+      src[k].forEach(function(x){ if (!seen[x]){ seen[x] = 1; bag.push(x); } });
+    });
+  });
+  return out;
+}
+function pullSunkan(ctx){
+  return Promise.all([
+    loadSunkanBuiltin(),
+    (ctx && ctx.main) ? fileJSON(ctx.main, SUNKAN_FILE) : Promise.resolve(null)
+  ]).then(function(r){
+    var builtin = r[0], remote = r[1];
     var user  = lsJSON("sunkan:decks", []);
     var added = lsJSON("sunkan:added", {});
     var stars = lsJSON("sunkan:stars", {});
@@ -479,6 +583,11 @@ function pullSunkan(){
     if (!Array.isArray(user)) user = [];
     if (!stars || typeof stars !== "object") stars = {};
     if (!added || typeof added !== "object") added = {};
+    if (remote){
+      user  = mergeSunkanDecks(user, remote.decks);
+      added = mergeSunkanAdded(added, remote.added);
+      stars = mergeSunkanStars(stars, remote.stars);
+    }
 
     var decks = builtin.concat(user), seen = {}, out = [];
     decks.forEach(function(deck){
@@ -555,7 +664,31 @@ function bookshelfSplitParts(text){
   }
   return res;
 }
-function pullBookshelf(){
+/* BOOKSHELF の Gist は index.json に一覧、b-<id>.json に 1 冊ずつ。
+   Gist の GET はファイルの中身も一緒に返すので、取り直しは要らない */
+function bookshelfFromGist(files){
+  if (!files) return Promise.resolve([]);
+  return fileJSON(files, BOOKSHELF_IDX).then(function(idx){
+    if (!idx || typeof idx !== "object") return [];
+    var names = Object.keys(idx)
+      .filter(function(id){ return !(idx[id] && idx[id].deleted); })
+      .map(function(id){ return "b-" + id + ".json"; });
+    return Promise.all(names.map(function(n){ return fileJSON(files, n); }))
+      .then(function(list){
+        return list.filter(function(b){ return b && !b.deleted; });
+      });
+  });
+}
+function pullBookshelf(ctx){
+  return Promise.all([pullBookshelfLocal(), bookshelfFromGist(ctx && ctx.bookshelf)])
+    .then(function(r){
+      var books = r[0], seen = {};
+      books.forEach(function(b){ if (b && b.id) seen[b.id] = 1; });
+      r[1].forEach(function(b){ if (b && b.id && !seen[b.id]){ seen[b.id] = 1; books.push(b); } });
+      return booksToCards(books);
+    });
+}
+function pullBookshelfLocal(){
   return new Promise(function(res){
     var r;
     try{ r = indexedDB.open("bookshelf"); }
@@ -572,7 +705,7 @@ function pullBookshelf(){
       try{
         var t = db.transaction("books", "readonly");
         var q = t.objectStore("books").getAll();
-        q.onsuccess = function(){ db.close(); res(booksToCards(q.result || [])); };
+        q.onsuccess = function(){ db.close(); res(q.result || []); };
         q.onerror = function(){ db.close(); res([]); };
       }catch(e){ try{ db.close(); }catch(e2){} res([]); }
     };
@@ -644,13 +777,13 @@ function pullGrammar(){
 
 var SOURCES = {
   mydict:    { label:"My Dictionary", short:"辞書", url:"../dictionary-22/", pull: pullMyDict,
-               where:"localStorage mydict.v1" },
+               where:"mydict.v1 と、Gist の mydict-data.json" },
   sunkan:    { label:"瞬間英作文",    short:"瞬英", url:"../sunkan-333/",    pull: pullSunkan,
-               where:"localStorage sunkan:stars（星を付けた文だけ）" },
+               where:"sunkan:stars と、Gist の sunkan-data.json（星を付けた文だけ）" },
   bookshelf: { label:"BOOKSHELF",     short:"洋書", url:"../BOOKSHELF/",     pull: pullBookshelf,
-               where:"IndexedDB bookshelf（本文のハイライト）" },
+               where:"IndexedDB bookshelf と、Gist の index.json（本文のハイライト）" },
   grammar:   { label:"Grammer-dict",  short:"構文", url:"../Grammer-dict/",  pull: pullGrammar,
-               where:"localStorage grammar-dict-user-v1" }
+               where:"localStorage grammar-dict-user-v1（このアプリには同期が無い）" }
 };
 var SRC_ORDER = ["mydict", "sunkan", "bookshelf", "grammar"];
 
@@ -817,9 +950,12 @@ function pullAll(silent){
   var names = SRC_ORDER.filter(function(k){ return CFG.sources[k]; });
   var added = 0, dropped = 0, stalled = [];
 
-  var chain = names.reduce(function(p, name){
+  /* Gist は 1 回だけ取って、全アダプタで使い回す */
+  var chain = fetchSourceGists().catch(function(){ return { main:null, bookshelf:null }; })
+    .then(function(ctx){
+  return names.reduce(function(p, name){
     return p.then(function(){
-      return Promise.resolve().then(function(){ return SOURCES[name].pull(); })
+      return Promise.resolve().then(function(){ return SOURCES[name].pull(ctx); })
         .then(function(fresh){
           if (!Array.isArray(fresh)) fresh = [];
           var prev = ST.cards.filter(function(c){ return c.src === name; });
@@ -850,6 +986,7 @@ function pullAll(silent){
         .catch(function(){ stalled.push(name); });
     });
   }, Promise.resolve());
+    });
 
   return chain.then(loadAll).then(function(){
     ST.pulling = false;
@@ -1110,16 +1247,20 @@ function emptyNoCards(){
     return '<a class="mini" href="' + esc(SOURCES[k].url) + '" target="_blank" rel="noopener">' +
            esc(SOURCES[k].label) + "</a>";
   }).join(" ");
+  var ready = syncReady();
   return '<div class="empty"><div class="big">📥</div>' +
     "<h2>まだ何も入っていません</h2>" +
     "<p>右上の ⟳ で、各アプリから項目を集めます。</p>" +
     '<div class="note-box" style="text-align:left;margin-top:18px">' +
-      "拾ってこられるのは、<br>" +
-      SRC_ORDER.map(function(k){
-        return "・" + esc(SOURCES[k].label) + " … " + esc(SOURCES[k].where);
-      }).join("<br>") +
-      "<br><br><b>読めないときは</b>ホーム画面に追加したアプリと、ブラウザで開いたアプリとで、" +
-      "iOS は保存領域が分かれています。項目を入れたのと同じ側から、このアプリも開いてください。" +
+      "<b>空のままなら、別の入れ物から開いています。</b><br>" +
+      "iOS はホーム画面に追加したアプリ・Safari・アプリ内ブラウザで、" +
+      "保存領域がそれぞれ分かれます。別の側から開くと、各アプリの保存は" +
+      "丸ごと空に見えます。直し方は 2 つ。<br><br>" +
+      "① 項目を入れたのと<b>同じ側</b>から、このアプリも開く<br>" +
+      "② ⚙ で<b>同期を設定する</b>。Gist から読むようになるので、" +
+      "どの入れ物から開いても出てきます" +
+      (ready ? "" : "（いまは未設定）") +
+      "<br><br>ただし Grammer-dict は同期を持たないので、①でしか読めません。" +
     "</div>" +
     '<div class="row-play" style="justify-content:center;flex-wrap:wrap">' + links + "</div>" +
     '<button class="btn-wide" id="emptyPull" style="max-width:280px;margin:18px auto 0">取り込む</button>' +
@@ -1356,8 +1497,10 @@ function openCfg(){
         "同期をONにすると、<b>予定・書き足した訳・記録</b>が GitHub の" +
         "「シークレットGist」に置かれます。<b>URLを知っている人は見られる</b>ので、" +
         "完全に非公開ではありません。トークンはこの端末にだけ保存されます。<br><br>" +
-        "札そのものは同期しません。別の端末では、先に元のアプリを同期してから" +
-        "取り込んでください。" +
+        "設定してあると、<b>取り込みも Gist から読みます</b>。iOS は" +
+        "ホーム画面のアプリ・Safari・アプリ内ブラウザで保存領域が分かれますが、" +
+        "Gist はネットワーク越しなのでその分かれ目を越えられます。" +
+        "（Grammer-dict は同期を持たないので、同じ入れ物からしか読めません）" +
       "</div>" +
       (mydictSyncAvailable() && !syncReady()
         ? '<button class="b-sec" id="cAdopt" style="width:100%;padding:12px;border-radius:12px;' +
@@ -1371,6 +1514,12 @@ function openCfg(){
       '<div style="font-size:11.5px;color:var(--dim);margin:10px 0 5px">Gist ID（空なら「Gistを作る」で作れます）</div>' +
       '<input type="text" id="cGist" placeholder="32文字のID" ' +
         'autocomplete="off" spellcheck="false" value="' + esc(syncGist()) + '" ' +
+        'style="width:100%;padding:11px 12px;border-radius:11px;background:var(--panel2);' +
+        'border:1px solid var(--line);font-size:15px">' +
+      '<div style="font-size:11.5px;color:var(--dim);margin:10px 0 5px">' +
+        "BOOKSHELF の Gist ID（同じなら空でよい）</div>" +
+      '<input type="text" id="cBsGist" placeholder="別のGistを使っているときだけ" ' +
+        'autocomplete="off" spellcheck="false" value="' + esc(lsGet(BS_GIST_KEY)) + '" ' +
         'style="width:100%;padding:11px 12px;border-radius:11px;background:var(--panel2);' +
         'border:1px solid var(--line);font-size:15px">' +
       '<div class="toggles" style="margin-top:10px">' +
@@ -1408,6 +1557,7 @@ function openCfg(){
     CFG.autoSpeak = $("#cAutoSpeak").checked;
     lsSet(SYNC_TOKEN_KEY, trim($("#cToken").value));
     lsSet(SYNC_GIST_KEY,  trim($("#cGist").value));
+    lsSet(BS_GIST_KEY,    trim($("#cBsGist").value));
     lsSet(SYNC_AUTO_KEY,  $("#cAuto").checked ? "1" : "");
     updateSyncChip("");
     if (!MODE_ORDER.some(function(k){ return CFG.modes[k]; })){
@@ -1432,7 +1582,9 @@ function openCfg(){
   $("#cSyncNow").onclick = function(){
     lsSet(SYNC_TOKEN_KEY, trim($("#cToken").value));
     lsSet(SYNC_GIST_KEY,  trim($("#cGist").value));
-    trySync(false).then(function(){ if (syncReady()) openCfg(); });
+    lsSet(BS_GIST_KEY,    trim($("#cBsGist").value));
+    updateSyncChip("");
+    trySync(false).then(function(){ return pullAll(false); });
   };
   $("#cGistNew").onclick = function(){
     var tk = trim($("#cToken").value);

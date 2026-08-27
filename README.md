@@ -15,12 +15,15 @@
 
 ## 拾ってくるもの
 
-| アプリ | 実際の保存先 | 拾う対象 |
-|---|---|---|
-| My Dictionary | `localStorage` `mydict.v1` | 登録した表現すべて |
-| 瞬間英作文 | `localStorage` `sunkan:stars` ＋ `sunkan:decks` / `sunkan:added` ／ 収録分は `../sunkan-333/assets/data.js` | **★を付けた文だけ**（＝詰まった文） |
-| BOOKSHELF | `IndexedDB` `bookshelf` / store `books` | 本文に引いた**ハイライト**の範囲 |
-| Grammer-dict | `localStorage` `grammar-dict-user-v1` | 自分で足した構文 |
+| アプリ | 手元から | Gist から | 拾う対象 |
+|---|---|---|---|
+| My Dictionary | `localStorage` `mydict.v1` | `mydict-data.json` | 登録した表現すべて |
+| 瞬間英作文 | `localStorage` `sunkan:stars` / `sunkan:decks` / `sunkan:added`<br>収録分は `../sunkan-333/assets/data.js` | `sunkan-data.json` | **★を付けた文だけ**（＝詰まった文） |
+| BOOKSHELF | `IndexedDB` `bookshelf` / store `books` | `index.json` ＋ `b-<id>.json` | 本文に引いた**ハイライト**の範囲 |
+| Grammer-dict | `localStorage` `grammar-dict-user-v1` | **なし**（同期機能が無い） | 自分で足した構文 |
+
+手元と Gist の両方を読んで合流させる。両方にあるものは手元を優先し、
+片方にしか無いものは足す。`uid` が `ソース:元のid` なので、重なりは自然に潰れる。
 
 読むだけ。元のアプリのデータは書き換えない。
 このアプリが持つのは **予定（いつ出すか）と、書き足した訳** だけ。
@@ -100,6 +103,11 @@ GitHub の**シークレット Gist** に置く。他のアプリと同じ流儀
 
 置き場は My Dictionary と同じ Gist の、別ファイル（`revq-data.json`）。
 Gist の PATCH は渡したファイルだけを触るので、互いの書き込みを踏まない。
+瞬間英作文の `sunkan-data.json` にも「My Dictionary と同じ Gist に同居できるよう
+名前を分ける」とある。1 つの Gist にアプリごとのファイルを置くのが既定の流儀。
+
+BOOKSHELF だけは自分の Gist を使う。同じ Gist なら何もしなくてよい。
+別なら設定シートの「BOOKSHELF の Gist ID」に入れる。
 
 ### 設定がいらない場合がある
 
@@ -132,16 +140,25 @@ My Dictionary 側が未設定なら、設定シートでトークンを入れて
 
 ## 気をつける点
 
-**iOS はホーム画面に追加したアプリとブラウザで保存領域が分かれる。**
-片方から見ると、もう片方の `localStorage` / `IndexedDB` は丸ごと空に見える。
+**iOS はホーム画面に追加したアプリ・Safari・アプリ内ブラウザで保存領域が分かれる。**
+別の側から見ると、各アプリの `localStorage` / `IndexedDB` は丸ごと空に見える。
+リンクをタップしてアプリ内ブラウザで開いた場合も、そこは別の入れ物になる。
 My Dictionary が瞬間英作文へ渡すときに URL や Gist を経由しているのはこのため。
 
-このアプリでも同じことが起きるので、
+直し方は 2 つ。
 
-- **項目を入れたのと同じ側から、このアプリも開く**必要がある。
+1. **項目を入れたのと同じ側から、このアプリも開く。**
+2. **同期を設定する。** そうすると取り込みも Gist から読むようになり、
+   ネットワーク越しなので入れ物の分かれ目を越えられる。
+   どの入れ物から開いても中身が出る。
+
+ただし **Grammer-dict は同期を持たない**ので、1 の方法でしか読めない。
+
+そのうえで、
+
 - 「前は取れていたのに今回 0 件」を消滅と受け取らない。その取り込みは丸ごと見送り、
   「読めず」とだけ出す。空に見えただけで札を消してしまわないため。
-- 同期を ON にしておけば、予定と書き足した訳は Gist 経由で両方の入れ物に届く。
+- 予定と書き足した訳も Gist 経由で両方の入れ物に届く。
   同期を使わない場合は、書き出し / 読み込み（JSON）でも移せる。
   どちらも、同じ面については **last が新しいほう**を残す。
 
