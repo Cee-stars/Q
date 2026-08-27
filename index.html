@@ -258,6 +258,7 @@ function shuffle(a){
 }
 
 /* ---------- 設定 ---------- */
+var APP_VERSION = "2026-08-27c";   // どの版が動いているかを表に出す
 var CFG_KEY = "revq.settings.v1";
 var DEFAULTS = {
   newPerDay: 10,
@@ -1777,7 +1778,10 @@ function openCfg(){
     "</div>" +
     '<div class="sheet-btns" style="margin-top:16px">' +
       '<button class="b-pri" id="cSave">保存する</button>' +
-    "</div>";
+    "</div>" +
+    '<div style="text-align:center;font-size:11px;color:var(--dim);margin-top:14px">' +
+      "版 " + esc(APP_VERSION) + '　<button id="cUpdate" style="color:var(--acc);' +
+      'font-size:11px;text-decoration:underline">最新に入れ替える</button></div>';
 
   $("#cfgScrim").classList.add("on");
 
@@ -1804,6 +1808,25 @@ function openCfg(){
     render();
   };
   $("#cFiles").onclick  = pickSourceFiles;
+  /* 掴んでいる古い版を手放させる。作業員も写しも捨てて読み直す。
+     予定や札は IndexedDB にあるので、これでは消えない。 */
+  $("#cUpdate").onclick = function(){
+    toast("入れ替えています…");
+    var jobs = [];
+    if (window.caches && caches.keys){
+      jobs.push(caches.keys().then(function(ks){
+        return Promise.all(ks.map(function(k){ return caches.delete(k); }));
+      }).catch(function(){}));
+    }
+    if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations){
+      jobs.push(navigator.serviceWorker.getRegistrations().then(function(rs){
+        return Promise.all(rs.map(function(r){ return r.unregister(); }));
+      }).catch(function(){}));
+    }
+    Promise.all(jobs).then(function(){
+      setTimeout(function(){ location.reload(true); }, 400);
+    });
+  };
   $("#cExport").onclick = exportJSON;
   $("#cImport").onclick = importJSON;
   var adopt = $("#cAdopt");
@@ -2157,9 +2180,25 @@ loadAll().then(function(){
   render();
 });
 
+/* ホーム画面に追加したアプリは、いちど掴んだ版をなかなか手放さない。
+   起動のたびに新しい版が無いか見に行き、入れ替わったら一度だけ読み直す。
+   最初の登録のときは主導権の移動が必ず起きるので、そこでは読み直さない。 */
 if ("serviceWorker" in navigator){
+  var hadController = !!navigator.serviceWorker.controller;
+  var swReloading = false;
+  navigator.serviceWorker.addEventListener("controllerchange", function(){
+    if (!hadController || swReloading) return;
+    swReloading = true;
+    location.reload();
+  });
   window.addEventListener("load", function(){
-    navigator.serviceWorker.register("sw.js").catch(function(){});
+    navigator.serviceWorker.register("sw.js").then(function(reg){
+      try{ reg.update(); }catch(e){}
+      /* 画面に戻ってきたときにも確かめる。開きっぱなしのまま古びるのを防ぐ */
+      document.addEventListener("visibilitychange", function(){
+        if (document.visibilityState === "visible"){ try{ reg.update(); }catch(e){} }
+      });
+    }).catch(function(){});
   });
 }
 </script>
