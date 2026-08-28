@@ -182,6 +182,19 @@ main{max-width:640px;margin:0 auto;padding:14px}
           padding:12px;font-size:12.5px;color:var(--dim);line-height:1.7;margin-bottom:16px}
 .note-box b{color:var(--warn)}
 
+/* ---------- 取り込みの結果 ---------- */
+.ir{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    padding:13px;margin-bottom:14px;text-align:left}
+.ir-head{display:flex;align-items:flex-start;gap:8px;font-size:13.5px;font-weight:700;
+         margin-bottom:10px;line-height:1.5}
+.ir-head button{margin-left:auto;font-size:19px;color:var(--dim);line-height:1;flex:none}
+.ir-row{font-size:12.5px;color:var(--dim);line-height:1.6;padding:7px 0;
+        border-top:1px solid var(--line);word-break:break-word}
+.ir-row b{color:var(--tx);font-weight:600}
+.ir-row small{opacity:.7}
+.ir-o{color:var(--ok);font-weight:800;margin-right:6px}
+.ir-x{color:var(--bad);font-weight:800;margin-right:6px}
+
 /* ---------- toast ---------- */
 #toast{position:fixed;left:50%;bottom:calc(26px + env(safe-area-inset-bottom));
        transform:translateX(-50%) translateY(20px);background:#000;color:#fff;
@@ -258,7 +271,7 @@ function shuffle(a){
 }
 
 /* ---------- 設定 ---------- */
-var APP_VERSION = "2026-08-27c";   // どの版が動いているかを表に出す
+var APP_VERSION = "2026-08-27d";   // どの版が動いているかを表に出す
 var CFG_KEY = "revq.settings.v1";
 var DEFAULTS = {
   newPerDay: 10,
@@ -906,24 +919,42 @@ function readFileText(f){
    書き足した訳（gloss）にも触らない。あれはこちらの持ちもの。 */
 function importSourceFiles(files){
   var list = Array.prototype.slice.call(files || []);
-  if (!list.length) return Promise.resolve();
+  /* 1 件も選ばれなかったのも、立派な結果。黙って終わらない */
+  if (!list.length){
+    ST.importReport = { at: Date.now(), rows: [], fresh: 0, empty: true };
+    render();
+    return Promise.resolve();
+  }
   toast(list.length > 1 ? list.length + " 件を読んでいます…" : "読んでいます…");
 
   return list.reduce(function(p, f){
     return p.then(function(acc){
+      var row = { name: f.name || "(名前なし)", size: f.size || 0, src: null, n: 0, why: "" };
+      acc.rows.push(row);
       return readFileText(f)
-        .then(function(t){ return t ? parseSourceExport(t, f.name) : null; })
-        .catch(function(){ return null; })
+        .then(function(t){
+          row.chars = t.length;
+          if (!t){ row.why = "中身を読めませんでした"; return null; }
+          return parseSourceExport(t, f.name);
+        })
+        .catch(function(){ row.why = "読み込みでつまずきました"; return null; })
         .then(function(r){
-          if (!r || !r.src || !Array.isArray(r.cards)){ acc.bad++; return acc; }
+          if (!r || !r.src || !Array.isArray(r.cards)){
+            if (!row.why) row.why = row.chars ? "どのアプリの書き出しか分かりませんでした" : "空でした";
+            acc.bad++; return acc;
+          }
+          row.src = r.src; row.n = r.cards.length;
+          if (!r.cards.length) row.why = "中身は読めましたが、札にできるものがありませんでした";
           acc.hit[r.src] = (acc.hit[r.src] || 0) + r.cards.length;
           unionCards(acc.cards, r.cards);      // 同じ札が二重に来ても uid で潰れる
           return acc;
         });
     });
-  }, Promise.resolve({ cards:[], hit:{}, bad:0 })).then(function(acc){
+  }, Promise.resolve({ cards:[], hit:{}, bad:0, rows:[] })).then(function(acc){
 
     if (!acc.cards.length){
+      ST.importReport = { at: Date.now(), rows: acc.rows, fresh: 0 };
+      render();
       toast(acc.bad ? "読めませんでした" : "取り込めるものがありませんでした");
       return;
     }
@@ -956,9 +987,14 @@ function importSourceFiles(files){
       if (acc.bad) msg += "／" + acc.bad + " 件は読めず";
       if (sunkanBuiltinLost && acc.hit.sunkan != null)
         msg += "／収録セットの★は引けませんでした";
+      ST.importReport = { at: Date.now(), rows: acc.rows, fresh: fresh };
+      render();
       toast(msg);
     });
-  }).catch(function(){
+  }).catch(function(e){
+    ST.importReport = { at: Date.now(), rows: [], fresh: 0,
+                        fatal: (e && e.message) || "理由不明" };
+    render();
     toast("読めませんでした");
   });
 }
@@ -969,14 +1005,19 @@ function importSourceFiles(files){
 function pickSourceFiles(){
   var inp = document.createElement("input");
   inp.type = "file";
-  inp.accept = "application/json,.json";
+  /* accept を絞ると、iOS の「ファイル」で書き出しが灰色になって選べないことがある。
+     中身を見て判別しているので、ここでは何でも受けておく。 */
   inp.multiple = true;
+  inp.style.position = "fixed";
+  inp.style.left = "-9999px";
   inp.onchange = function(){
     var fs = inp.files;
-    if (!fs || !fs.length) return;
     closeCfg();
-    importSourceFiles(fs);
+    importSourceFiles(fs);                 // 0 件なら 0 件と画面に出る
+    setTimeout(function(){ if (inp.parentNode) inp.parentNode.removeChild(inp); }, 0);
   };
+  /* DOM に入れずに click すると、iOS で選択画面が出ないことがある */
+  document.body.appendChild(inp);
   inp.click();
 }
 
@@ -1018,6 +1059,7 @@ var ST = {
   queue: [],        // 今日ぶんの並び
   qi: 0,
   view: "today",
+  importReport: null,   // 直前の取り込みで何が起きたか。画面に残す
   revealed: false,
   filterSrc: "all",
   q: "",
@@ -1282,24 +1324,60 @@ function render(){
   else renderStats();
 }
 
+/* 取り込みで 1 ファイルずつ何が起きたかを、消えない形で出す。
+   手元で再現できない相談のとき、トーストが消えたあとでは何も分からない。 */
+function importReportHtml(){
+  var r = ST.importReport;
+  if (!r) return "";
+  var head, body = "";
+
+  if (r.fatal){
+    head = "取り込みが途中で止まりました";
+    body = '<div class="ir-row"><span class="ir-x">×</span>' + esc(r.fatal) + "</div>";
+  } else if (r.empty){
+    head = "ファイルが選ばれませんでした";
+    body = '<div class="ir-row"><span class="ir-x">×</span>' +
+      "選択の画面で書き出したファイルを選んでから「開く」を押してください。" +
+      "iCloud にしか無いファイルは、いちど開いて端末に降ろす必要があります。</div>";
+  } else {
+    var got = 0;
+    r.rows.forEach(function(x){ got += x.n; });
+    head = "取り込みの結果：" + r.rows.length + " ファイル／" + got + " 枚" +
+           (r.fresh ? "（新しく " + r.fresh + " 枚）" : "（新しく増えたぶんはありません）");
+    body = r.rows.map(function(x){
+      var ok = x.src && x.n;
+      var kb = x.size ? (x.size < 1024 ? x.size + " B" : Math.round(x.size/1024) + " KB") : "0 B";
+      return '<div class="ir-row"><span class="' + (ok ? "ir-o" : "ir-x") + '">' +
+        (ok ? "○" : "×") + "</span><b>" + esc(x.name) + "</b> <small>" + kb + "</small><br>" +
+        (ok ? SOURCES[x.src].label + " として " + x.n + " 枚"
+            : esc(x.why || "取り込めませんでした")) + "</div>";
+    }).join("");
+  }
+  return '<div class="ir"><div class="ir-head">' + esc(head) +
+    '<button id="irClose" aria-label="閉じる">×</button></div>' + body + "</div>";
+}
+
 /* ---------- 今日 ---------- */
 function renderToday(){
   var el = $("#v-today");
   var total = ST.queue.length, doneN = ST.qi, e = ST.queue[ST.qi];
+  var report = importReportHtml();
 
   if (!ST.cards.length){
-    el.innerHTML = emptyNoCards();
+    el.innerHTML = report + emptyNoCards();
     wireEmpty();
+    wireReport();
     return;
   }
   if (!e){
-    el.innerHTML = emptyDone(total);
+    el.innerHTML = report + emptyDone(total);
     wireEmpty();
+    wireReport();
     return;
   }
 
   var pct = total ? Math.round(doneN / total * 100) : 0;
-  var html =
+  var html = report +
     '<div class="bar"><i style="width:' + pct + '%"></i></div>' +
     '<div class="counts">' +
       "<span>のこり <b>" + (total - doneN) + "</b></span>" +
@@ -1310,6 +1388,7 @@ function renderToday(){
 
   el.innerHTML = html;
   wireCard(e);
+  wireReport();
 
   if (e.mode === "listen" && !ST.revealed && CFG.autoSpeak) SPEECH.say(speakText(e.card));
 }
@@ -1504,6 +1583,10 @@ function emptyDone(total){
   "</div>";
 }
 
+function wireReport(){
+  var b = $("#irClose");
+  if (b) b.onclick = function(){ ST.importReport = null; render(); };
+}
 function wireEmpty(){
   var b = $("#emptyPull"); if (b) b.onclick = function(){ pullAll(false); };
   var f = $("#emptyFiles"); if (f) f.onclick = pickSourceFiles;
