@@ -211,7 +211,7 @@ h2.sec{font-size:13px;color:var(--dim);margin:22px 0 9px;font-weight:700}
    外のライブラリは使わない。保存は IndexedDB。パスは全部相対。
    ========================================================================== */
 
-var APP_VERSION = "v1 (2026-08-30)";
+var APP_VERSION = "v1.1 (2026-08-30)";
 
 /* ---------- 小道具 ---------- */
 var $ = function(s){ return document.querySelector(s); };
@@ -946,20 +946,118 @@ function pickCsv(){
     });
   });
 }
+/* 渡された JSON がどのアプリのものかを見分けて、こちらの形に均す。
+   キーがアプリごとに違うだけで、中身は同じ「日本語と英語の対」なので、
+   読み替えれば入る。ファイルを手で渡す道なので、勝手にどこかを覗きに
+   行ったりはしない。 */
+function normalizeJson(d){
+  var out = [], kind = "";
+  var list = Array.isArray(d) ? d : (d && Array.isArray(d.items) ? d.items : null);
+
+  /* このアプリ自身の書き出し */
+  if (list && list.some(function(o){ return o && (o.japanese != null || o.english != null); })){
+    kind = "復習キュー";
+    list.forEach(function(o){
+      if (!o || typeof o !== "object") return;
+      out.push({ japanese:trim(o.japanese), english:trim(o.english), note:trim(o.note),
+                 sourceApp:trim(o.sourceApp) || "json",
+                 id:o.id, box:o.box, nextDue:o.nextDue,
+                 createdAt:o.createdAt, lastReviewedAt:o.lastReviewedAt });
+    });
+    return { kind:kind, items:out };
+  }
+
+  /* My Dictionary … 裸の配列で en / ja */
+  if (list && list.some(function(o){ return o && typeof o.en === "string"; })){
+    kind = "My Dictionary";
+    list.forEach(function(o){
+      if (!o || typeof o !== "object") return;
+      var note = [trim(o.ex), trim(o.exJa)].filter(Boolean).join(" / ");
+      out.push({ japanese:trim(o.ja), english:trim(o.en), note:note, sourceApp:"My Dictionary" });
+    });
+    return { kind:kind, items:out };
+  }
+
+  /* Grammer-dict … 裸の配列で h（見出し）/ j（意味）/ f（言い切りの形） */
+  if (list && list.some(function(o){ return o && typeof o.h === "string"; })){
+    kind = "Grammer-dict";
+    list.forEach(function(o){
+      if (!o || typeof o !== "object") return;
+      var h = trim(o.h), f = trim(o.f);
+      var ex = Array.isArray(o.e) && Array.isArray(o.e[0]) ? o.e[0] : null;
+      /* 見出しが "be about to …" のような欠けた形のときは、
+         言い切りの形か例文を英語の側に回す。声に出せる形にしておきたい */
+      var en = f || (ex ? trim(ex[0]) : "") || h;
+      var ja = trim(o.j) || (ex ? trim(ex[1]) : "");
+      var note = [(h !== en ? h : ""), trim(o.n)].filter(Boolean).join(" / ");
+      out.push({ japanese:ja, english:en, note:note, sourceApp:"Grammer-dict" });
+    });
+    return { kind:kind, items:out };
+  }
+
+  /* 瞬間英作文 … snapshot 形式。自作セットと、アプリ内で足した文が入っている。
+     収録セットの文はファイルに入らないので、ここからは取れない。 */
+  if (d && typeof d === "object" && d.app === "sunkan"){
+    kind = "瞬間英作文";
+    var push = function(it){
+      if (!it || typeof it !== "object") return;
+      var ja = trim(it.ja), en = trim(it.en);
+      if (!ja && !en) return;
+      out.push({ japanese:ja, english:en, note:trim(it.note), sourceApp:"瞬間英作文" });
+    };
+    (Array.isArray(d.decks) ? d.decks : []).forEach(function(dk){
+      (dk && Array.isArray(dk.items) ? dk.items : []).forEach(push);
+    });
+    if (d.added && typeof d.added === "object"){
+      Object.keys(d.added).forEach(function(k){
+        if (Array.isArray(d.added[k])) d.added[k].forEach(push);
+      });
+    }
+    return { kind:kind, items:out, thin:!out.length };
+  }
+
+  /* BOOKSHELF … 本そのもの。日本語と英語の対ではないので、札にはできない */
+  if (list && list.some(function(o){
+        return o && typeof o.text === "string" && typeof o.title === "string"; })){
+    return { kind:"BOOKSHELF", items:[], bookshelf:true };
+  }
+
+  return { kind:"", items:[], unknown:true };
+}
+
+var PAIR_SEP = " >>> ";   /* 同じ文の二重取り込みを見るための、組み合わせの鍵 */
+
 function pickJson(){
   pickFile(function(text){
     var d;
     try{ d = JSON.parse(text); }catch(e){ toast("JSON として読めませんでした"); return; }
-    var list = Array.isArray(d) ? d : (d && Array.isArray(d.items) ? d.items : null);
-    if (!list){ toast("項目の配列が見つかりませんでした"); return; }
-    var have = {};
-    ST.items.forEach(function(x){ have[x.id] = 1; });
+    var r = normalizeJson(d);
+
+    if (r.bookshelf){
+      toast("BOOKSHELF の本そのものは、日本語と英語の対ではないので入れられません");
+      return;
+    }
+    if (r.unknown){ toast("どのアプリの書き出しか分かりませんでした"); return; }
+    if (!r.items.length){
+      toast(r.kind + " の書き出しでしたが、入れられる項目がありませんでした" +
+            (r.thin ? "（収録セットの文は書き出しに入りません）" : ""));
+      return;
+    }
+
+    var have = {}, seen = {};
+    ST.items.forEach(function(x){
+      have[x.id] = 1;
+      seen[x.japanese + PAIR_SEP + x.english] = 1;
+    });
+
     var add = [], dup = 0;
-    list.forEach(function(o){
-      if (!o || typeof o !== "object") return;
+    r.items.forEach(function(o){
       var ja = trim(o.japanese), en = trim(o.english);
       if (!ja && !en) return;
-      if (o.id && have[o.id]){ dup++; return; }        // 同じ id は入れ直さない
+      if (o.id && have[o.id]){ dup++; return; }
+      var key = ja + PAIR_SEP + en;
+      if (seen[key]){ dup++; return; }        /* 同じ文が二重に入らないように */
+      seen[key] = 1;
       var it = newItem(ja, en, o.note, o.sourceApp);
       /* 予定つきで書き出したものは、そのまま引き継ぐ */
       if (o.id && !have[o.id]) it.id = String(o.id);
@@ -970,11 +1068,12 @@ function pickJson(){
       have[it.id] = 1;
       add.push(it);
     });
-    if (!add.length){ toast(dup ? "すでに入っているものだけでした" : "入れられる項目がありませんでした"); return; }
+
+    if (!add.length){ toast("すでに入っているものだけでした（" + dup + " 件）"); return; }
     ST.items = ST.items.concat(add);
     DB.putAll("items", add).then(function(){
       closeSheet(); render();
-      toast(add.length + " 件を入れました" + (dup ? "（" + dup + " 件は重複)" : ""));
+      toast(r.kind + " から " + add.length + " 件" + (dup ? "（" + dup + " 件は重複)" : ""));
     });
   });
 }
