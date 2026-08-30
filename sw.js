@@ -1,13 +1,17 @@
-/* 復習キュー — 本体だけを持っておく。
-   取り込み元のデータは毎回その場で読むので、ここでは触らない。 */
-const CACHE = "revq-v3";   // 名前を上げると activate で古いものが消える
-const ASSETS = ["./", "./index.html", "./manifest.webmanifest",
-                "./icon.svg", "./favicon.png", "./icon-180.png"];
-const BASE = new URL("./", self.location).pathname;   // 置き場所が変わっても効くように
+/* 復習キュー — オフラインでも開けるようにする。
+   本体を先に取っておき、ネットが無いときはその写しを出す。 */
+const CACHE = "fq-v1";
+const BASE = new URL("./", self.location).pathname;   // 置き場所が変わっても効く
+const ASSETS = ["./", "./index.html", "./manifest.webmanifest"];
 
 self.addEventListener("install", e => {
-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting()));
+  e.waitUntil(
+    caches.open(CACHE)
+      .then(c => Promise.all(ASSETS.map(a => c.add(a).catch(() => {}))))
+      .then(() => self.skipWaiting())
+  );
 });
+
 self.addEventListener("activate", e => {
   e.waitUntil(
     caches.keys()
@@ -15,18 +19,20 @@ self.addEventListener("activate", e => {
       .then(() => self.clients.claim())
   );
 });
+
 self.addEventListener("fetch", e => {
   const req = e.request;
   if (req.method !== "GET") return;
   const url = new URL(req.url);
   if (url.origin !== location.origin) return;
-  /* 瞬間英作文の収録データは向こうの持ちもの。古い写しを掴まないよう素通しにする */
-  if (url.pathname.indexOf("/sunkan-333/") >= 0) return;
+  if (url.pathname.indexOf(BASE) !== 0) return;
 
+  /* ネットを先に見る。取れたぶんは写しを更新しておく。
+     取れなければ写しを出す。それも無ければ本体を返して、白い画面を避ける。 */
   e.respondWith(
     fetch(req)
       .then(res => {
-        if (res && res.ok && url.pathname.indexOf(BASE) === 0) {
+        if (res && res.ok){
           const copy = res.clone();
           caches.open(CACHE).then(c => c.put(req, copy)).catch(() => {});
         }
