@@ -175,6 +175,23 @@ h2.sec{font-size:13px;color:var(--dim);margin:22px 0 9px;font-weight:700}
 .note-box b{color:var(--warn)}
 .rng{width:100%}
 
+/* ---------- ボックス ---------- */
+.bxdot{width:9px;height:9px;border-radius:99px;display:inline-block;flex:none}
+.bxdot.big{width:15px;height:15px}
+.chip{display:inline-flex;align-items:center;gap:6px}
+.filters button{display:inline-flex;align-items:center;gap:5px}
+.tag.bx{display:inline-flex;align-items:center;gap:5px}
+.bxrow{display:flex;align-items:center;gap:9px;padding:10px 12px;background:var(--panel2);
+       border:1px solid var(--line);border-radius:12px;margin-bottom:8px}
+.bxrow .bxname{flex:1;min-width:0;text-align:left;font-size:15px;font-weight:600}
+.bxrow .bxname small{display:block;font-size:11px;color:var(--dim);font-weight:600;margin-top:2px}
+.ordb{width:34px;height:34px;border-radius:10px;background:var(--panel);
+      border:1px solid var(--line);display:grid;place-items:center;font-size:15px;flex:none}
+.ordb[disabled]{opacity:.3}
+.swatches{display:flex;gap:8px;flex-wrap:wrap}
+.sw{width:34px;height:34px;border-radius:10px;border:2px solid transparent}
+.sw.on{border-color:var(--tx)}
+
 #toast{position:fixed;left:50%;bottom:calc(28px + env(safe-area-inset-bottom));
        transform:translateX(-50%) translateY(18px);background:#000;color:#fff;
        padding:11px 20px;border-radius:99px;font-size:13.5px;opacity:0;transition:.24s;
@@ -214,7 +231,7 @@ h2.sec{font-size:13px;color:var(--dim);margin:22px 0 9px;font-weight:700}
    外のライブラリは使わない。保存は IndexedDB。パスは全部相対。
    ========================================================================== */
 
-var APP_VERSION = "v1.2 (2026-08-30)";
+var APP_VERSION = "v1.3 (2026-08-30)";
 
 /* ---------- 小道具 ---------- */
 var $ = function(s){ return document.querySelector(s); };
@@ -264,7 +281,7 @@ function mmss(sec){
 /* ==========================================================================
    間隔反復（Leitner）
 
-   箱が上がるほど間が開く。詰まったら 1 に戻す。
+   レベルが上がるほど間が開く。詰まったら 1 に戻す。
    出すのは nextDue が今日以前のものだけ。やり残しは nextDue を触らないので、
    翌日そのまま対象に残る＝繰り越しは何もしなくても成立する。
    ========================================================================== */
@@ -277,7 +294,7 @@ function applyGrade(item, ok){
   item.nextDue = addDays(today(), BOX_DAYS[item.box]);
   return item;
 }
-function newItem(japanese, english, note, sourceApp){
+function newItem(japanese, english, note, sourceApp, boxId){
   var now = new Date().toISOString();
   return {
     id: uid(),
@@ -285,12 +302,107 @@ function newItem(japanese, english, note, sourceApp){
     english: trim(english),
     note: trim(note),
     sourceApp: trim(sourceApp) || "manual",
+    boxId: boxId || null,      // どのボックスに入れるか。null は未分類
     box: 1,
     nextDue: today(),          // 入れた日から出せる
     createdAt: now,
     lastReviewedAt: null
   };
 }
+
+/* ==========================================================================
+   ボックス（利用者が作る入れ物）
+
+   レベル1〜5 は間隔反復の段階。ボックスはそれとは別に、項目をまとめる入れ物。
+   item.boxId が null なら未分類。ボックスが 1 つも無くても普通に使える。
+   ========================================================================== */
+var BOX_COLORS = ["#FF7A18","#00C2FF","#00B87C","#FF3E8A","#F2B705",
+                  "#9B7BFF","#FF5C4D","#3DDC97","#7A8CFF","#C77DFF"];
+/* 移行と取り込みで、同じ名前のボックスにまとめる相手 */
+var SOURCE_BOXES = ["My Dictionary", "瞬間英作文", "Grammer-dict"];
+
+function bid(){
+  return "b" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+}
+function newBox(name, color, order){
+  var now = new Date().toISOString();
+  return {
+    id: bid(),
+    name: trim(name) || "名前なし",
+    color: color || BOX_COLORS[0],
+    order: isFinite(order) ? (order | 0) : 0,
+    createdAt: now,
+    updatedAt: now             // 同期の突き合わせに使う
+  };
+}
+/* まだ使っていない色から順に配る。使い切ったら頭から回す */
+function nextColor(){
+  var used = {};
+  ST.boxes.forEach(function(b){ used[String(b.color).toUpperCase()] = 1; });
+  for (var i = 0; i < BOX_COLORS.length; i++){
+    if (!used[BOX_COLORS[i]]) return BOX_COLORS[i];
+  }
+  return BOX_COLORS[ST.boxes.length % BOX_COLORS.length];
+}
+function nextOrder(){
+  var mx = -1;
+  ST.boxes.forEach(function(b){ if ((b.order | 0) > mx) mx = b.order | 0; });
+  return mx + 1;
+}
+function sortBoxes(){
+  ST.boxes.sort(function(a, b){
+    var d = (a.order | 0) - (b.order | 0);
+    return d !== 0 ? d : ((a.createdAt || "") < (b.createdAt || "") ? -1 : 1);
+  });
+  return ST.boxes;
+}
+function boxById(id){
+  if (!id) return null;
+  return ST.boxes.filter(function(b){ return b.id === id; })[0] || null;
+}
+function boxByName(name){
+  if (!name) return null;
+  return ST.boxes.filter(function(b){ return b.name === name; })[0] || null;
+}
+function boxColorOf(id){ var b = boxById(id); return b ? b.color : "#9BA1B4"; }
+/* ボックスごとの件数。"" は未分類 */
+function boxIdCounts(){
+  var c = { "": 0 };
+  ST.boxes.forEach(function(b){ c[b.id] = 0; });
+  ST.items.forEach(function(it){
+    var k = it.boxId || "";
+    if (c[k] == null) k = "";          /* 消えたボックスを指していたら未分類として数える */
+    c[k]++;
+  });
+  return c;
+}
+/* 絞り込みの中身。"all" ぜんぶ ／ "none" 未分類 ／ それ以外はボックスの id */
+function itemsIn(filter){
+  if (!filter || filter === "all") return ST.items;
+  if (filter === "none"){
+    return ST.items.filter(function(it){ return !it.boxId || !boxById(it.boxId); });
+  }
+  return ST.items.filter(function(it){ return it.boxId === filter; });
+}
+function dueIn(filter){
+  var t = today();
+  return itemsIn(filter).filter(function(it){ return (it.nextDue || t) <= t; });
+}
+function filterLabel(f){
+  if (f === "none") return "未分類";
+  var b = boxById(f);
+  return b ? b.name : "すべて";
+}
+/* 指していた先が無くなっていたら「すべて」に戻す。宙ぶらりんの絞り込みを残さない */
+function normalizeBoxFilter(){
+  if (ST.boxFilter !== "all" && ST.boxFilter !== "none" && !boxById(ST.boxFilter)){
+    ST.boxFilter = "all"; saveBoxFilter();
+  }
+  if (ST.filterBoxId !== "all" && ST.filterBoxId !== "none" && !boxById(ST.filterBoxId)){
+    ST.filterBoxId = "all";
+  }
+}
+function saveBoxFilter(){ CFG.boxFilter = ST.boxFilter; saveCfg(); }
 
 /* ==========================================================================
    保存（IndexedDB）
@@ -300,11 +412,13 @@ var DB = (function(){
   function open(){
     if (p) return p;
     p = new Promise(function(res, rej){
-      var r = indexedDB.open("fukushu-queue", 1);
+      /* version 2 で boxes を足した。items / meta はそのまま持ち越す */
+      var r = indexedDB.open("fukushu-queue", 2);
       r.onupgradeneeded = function(){
         var db = r.result;
         if (!db.objectStoreNames.contains("items")) db.createObjectStore("items", {keyPath:"id"});
         if (!db.objectStoreNames.contains("meta"))  db.createObjectStore("meta",  {keyPath:"k"});
+        if (!db.objectStoreNames.contains("boxes")) db.createObjectStore("boxes", {keyPath:"id"});
       };
       r.onsuccess = function(){ res(r.result); };
       r.onerror = function(){ rej(r.error); };
@@ -337,7 +451,8 @@ var DB = (function(){
 /* ==========================================================================
    設定
    ========================================================================== */
-var DEFAULTS = { limitMin: 15, rate: 1.0, mode: "ja2en", jaVoice: "", enVoice: "" };
+var DEFAULTS = { limitMin: 15, rate: 1.0, mode: "ja2en", jaVoice: "", enVoice: "",
+                 boxFilter: "all" };
 var CFG_KEY = "fq.settings.v1";
 var CFG = (function(){
   var c = JSON.parse(JSON.stringify(DEFAULTS));
@@ -349,6 +464,7 @@ var CFG = (function(){
       if (typeof raw.mode === "string") c.mode = raw.mode;
       if (typeof raw.jaVoice === "string") c.jaVoice = raw.jaVoice;
       if (typeof raw.enVoice === "string") c.enVoice = raw.enVoice;
+      if (typeof raw.boxFilter === "string") c.boxFilter = raw.boxFilter;
     }
   }catch(e){}
   return c;
@@ -425,32 +541,90 @@ var MODE_ORDER = ["ja2en", "audio", "en2ja", "shadow"];
    ========================================================================== */
 var ST = {
   items: [],
+  boxes: [],           // 利用者が作った入れ物
   days: {},            // "YYYY-MM-DD" -> その日にやった件数
   tombs: {},           // 消した項目の id -> 消した時刻
+  boxTombs: {},        // 消したボックスの id -> 消した時刻
   view: "home",        // home | session | list
   mode: CFG.mode,
-  filterBox: "all",
+  boxFilter: CFG.boxFilter,  // ホームのボックス絞り込み。覚えておく
+  filterBox: "all",    // 一覧のレベル絞り込み
+  filterBoxId: "all",  // 一覧のボックス絞り込み
   q: "",
   ses: null            // セッション中だけ入る
 };
 
 function loadAll(){
-  return Promise.all([DB.all("items"), DB.get("meta", "days"), DB.get("meta", "tombs")])
+  return Promise.all([DB.all("items"), DB.get("meta", "days"), DB.get("meta", "tombs"),
+                      DB.all("boxes"), DB.get("meta", "boxTombs")])
     .then(function(r){
       ST.items = (r[0] || []).filter(function(x){ return x && x.id; });
       ST.days  = (r[1] && r[1].v) || {};
       ST.tombs = (r[2] && r[2].v) || {};
-    });
+      ST.boxes = (r[3] || []).filter(function(x){ return x && x.id; });
+      ST.boxTombs = (r[4] && r[4].v) || {};
+      sortBoxes();
+    })
+    .then(migrateBoxes)
+    .then(normalizeBoxFilter);
 }
 function saveDays(){ return DB.put("meta", { k:"days", v:ST.days }); }
 function saveTombs(){ return DB.put("meta", { k:"tombs", v:ST.tombs }); }
+function saveBoxTombs(){ return DB.put("meta", { k:"boxTombs", v:ST.boxTombs }); }
 var TOMB_MAXAGE = 90 * 86400000;   // 墓標は 90 日で片づける
+function pruneTombs(map){
+  var cut = Date.now() - TOMB_MAXAGE;
+  Object.keys(map).forEach(function(k){ if (map[k] < cut) delete map[k]; });
+  return map;
+}
 /* 消したことを残しておかないと、向こうに残っている同じ項目が同期で戻ってくる */
 function recordTomb(id){
-  ST.tombs[id] = Date.now();
-  var cut = Date.now() - TOMB_MAXAGE;
-  Object.keys(ST.tombs).forEach(function(k){ if (ST.tombs[k] < cut) delete ST.tombs[k]; });
+  ST.tombs[id] = Date.now(); pruneTombs(ST.tombs);
   return saveTombs();
+}
+function recordBoxTomb(id){
+  ST.boxTombs[id] = Date.now(); pruneTombs(ST.boxTombs);
+  return saveBoxTombs();
+}
+
+/* ---------- ボックスへの振り分け（1 度だけ） ----------
+   これまでの項目には boxId が無い。取り込み元の名前が分かるものだけ、
+   同じ名前のボックスにまとめる。それ以外は未分類にする。
+
+   済んだ印は meta の boxMigrated に立てる。印を立てる前に落ちても、
+   boxId を入れ終わった項目は次の回で素通りするので、2 回走っても同じ結果になる。
+   書けなかったときは印を立てずに次の起動へ回す。項目そのものは消さない。 */
+function migrateBoxes(){
+  return DB.get("meta", "boxMigrated").then(function(rec){
+    if (rec && rec.v) return null;
+
+    var byName = {};
+    ST.boxes.forEach(function(b){ byName[b.name] = b; });
+
+    var madeBoxes = [], movedItems = [];
+    ST.items.forEach(function(it){
+      if (it.boxId !== undefined) return;      /* もう振り分け済み */
+      var src = trim(it.sourceApp);
+      if (SOURCE_BOXES.indexOf(src) >= 0){
+        var bx = byName[src];
+        if (!bx){
+          bx = newBox(src, nextColor(), nextOrder());
+          byName[src] = bx; ST.boxes.push(bx); madeBoxes.push(bx);
+        }
+        it.boxId = bx.id;
+      } else {
+        it.boxId = null;                       /* manual / csv / json / 空 は未分類 */
+      }
+      movedItems.push(it);
+    });
+    sortBoxes();
+
+    return DB.putAll("boxes", madeBoxes)
+      .then(function(){ return DB.putAll("items", movedItems); })
+      .then(function(){ return DB.put("meta", { k:"boxMigrated", v:1 }); })
+      .then(function(){ return null; })
+      .catch(function(){ return null; });
+  }).catch(function(){ return null; });
 }
 
 function dueItems(){
@@ -466,9 +640,9 @@ function streak(){
   while (ST.days[d]){ n++; d = addDays(d, -1); }
   return n;
 }
-function boxCounts(){
+function boxCounts(list){
   var c = {1:0,2:0,3:0,4:0,5:0};
-  ST.items.forEach(function(it){ var b = it.box || 1; if (c[b] != null) c[b]++; });
+  (list || ST.items).forEach(function(it){ var b = it.box || 1; if (c[b] != null) c[b]++; });
   return c;
 }
 
@@ -479,7 +653,8 @@ function boxCounts(){
    翌日そのまま出題対象に残る。
    ========================================================================== */
 function startSession(){
-  var pool = shuffle(dueItems().slice());
+  /* 選んでいるボックスのぶんだけ出す */
+  var pool = shuffle(dueIn(ST.boxFilter).slice());
   if (!pool.length){ toast("今日出すものはありません"); return; }
   ST.ses = {
     queue: pool,
@@ -593,9 +768,31 @@ function render(){
 }
 
 /* ---------- ホーム ---------- */
+/* ホームのボックス絞り込み。中身が 0 のボックスと未分類は出さない */
+function boxFilterHtml(){
+  var c = boxIdCounts();
+  var list = sortBoxes().filter(function(b){ return c[b.id] > 0; });
+  var none = c[""] > 0;
+  /* 行き先が 1 つしかないうちは出しても選びようがないので出さない */
+  if (list.length + (none ? 1 : 0) < 2) return "";
+  var btn = function(f, label, n, color){
+    return '<button class="chip' + (ST.boxFilter === f ? " on" : "") + '" data-bf="' + esc(f) + '">' +
+      (color ? '<i class="bxdot" style="background:' + esc(color) + '"></i>' : "") +
+      esc(label) + " " + n + "</button>";
+  };
+  return '<h2 class="sec">ボックス</h2><div class="chips" id="boxFilter">' +
+    btn("all", "すべて", ST.items.length, "") +
+    list.map(function(b){ return btn(b.id, b.name, c[b.id], b.color); }).join("") +
+    (none ? btn("none", "未分類", c[""], "") : "") +
+    "</div>";
+}
+
 function renderHome(){
-  var due = dueItems().length, total = ST.items.length;
-  var bc = boxCounts();
+  normalizeBoxFilter();
+  var total = ST.items.length;
+  var scope = itemsIn(ST.boxFilter);
+  var due = dueIn(ST.boxFilter).length;
+  var bc = boxCounts(scope);
   var m = $("#main");
 
   if (!total){
@@ -627,17 +824,20 @@ function renderHome(){
       '<div class="stat"><div class="n">' + (ST.days[today()] || 0) + '</div><div class="l">今日やった</div></div>' +
     "</div>" +
 
-    '<div class="card">' +
+    boxFilterHtml() +
+
+    '<div class="card"' + (ST.boxFilter === "all" ? "" : ' style="margin-top:10px"') + ">" +
       '<div class="due-big"><div class="n">' + due + '</div>' +
-        '<div class="l">' + (due ? "件が今日の出番です" : "今日出すものはありません") + "</div></div>" +
+        '<div class="l">' + (due ? "件が今日の出番です" : "今日出すものはありません") +
+          (ST.boxFilter === "all" ? "" : "（" + esc(filterLabel(ST.boxFilter)) + "）") + "</div></div>" +
       '<div class="boxdots" style="margin-top:16px">' +
         [1,2,3,4,5].map(function(b){
-          return '<i class="' + (bc[b] ? "on" : "") + '" title="箱' + b + " " + bc[b] + '件"></i>';
+          return '<i class="' + (bc[b] ? "on" : "") + '" title="レベル' + b + " " + bc[b] + '件"></i>';
         }).join("") +
       "</div>" +
       '<div class="bxline">' +
         [1,2,3,4,5].map(function(b){
-          return "<span><b>" + bc[b] + "</b>箱" + b + "</span>";
+          return "<span><b>" + bc[b] + "</b>レベル" + b + "</span>";
         }).join("") +
       "</div>" +
     "</div>" +
@@ -667,6 +867,9 @@ function renderHome(){
       '<button class="btn2" id="hList">一覧を見る</button>' +
     "</div>";
 
+  Array.prototype.forEach.call(m.querySelectorAll("#boxFilter .chip"), function(b){
+    b.onclick = function(){ ST.boxFilter = b.dataset.bf; saveBoxFilter(); render(); };
+  });
   Array.prototype.forEach.call(m.querySelectorAll(".mode"), function(b){
     b.onclick = function(){ ST.mode = b.dataset.m; CFG.mode = ST.mode; saveCfg(); render(); };
   });
@@ -741,8 +944,8 @@ function renderSession(){
             "</div>" +
             "</div>" +
             '<div class="grades">' +
-              '<button class="g-no" id="gNo">詰まった<small>箱1にもどす</small></button>' +
-              '<button class="g-ok" id="gOk">言えた<small>箱' +
+              '<button class="g-no" id="gNo">詰まった<small>レベル1にもどす</small></button>' +
+              '<button class="g-ok" id="gOk">言えた<small>レベル' +
                 Math.min(MAX_BOX, (it.box||1)+1) + " ／ " +
                 BOX_DAYS[Math.min(MAX_BOX, (it.box||1)+1)] + "日後</small></button>" +
             "</div>";
@@ -755,7 +958,8 @@ function renderSession(){
       }).join("") +
     "</div>" +
     '<div class="card">' + body + "</div>" +
-    '<div class="srcline">箱' + (it.box || 1) +
+    '<div class="srcline">レベル' + (it.box || 1) +
+      (boxById(it.boxId) ? "　" + esc(boxById(it.boxId).name) : "") +
       (it.sourceApp && it.sourceApp !== "manual" ? "　" + esc(it.sourceApp) : "") + "</div>" +
     '<button class="btn2" id="sQuit" style="margin-top:16px">今日はここまでにする</button>';
 
@@ -773,9 +977,11 @@ function renderSession(){
 
 /* ---------- 一覧 ---------- */
 function renderList(){
+  normalizeBoxFilter();
   var m = $("#main"), t = today();
   var q = ST.q.toLowerCase();
-  var rows = ST.items.filter(function(it){
+  var scope = itemsIn(ST.filterBoxId);
+  var rows = scope.filter(function(it){
     if (ST.filterBox === "due"){ if ((it.nextDue || t) > t) return false; }
     else if (ST.filterBox !== "all"){ if ((it.box || 1) !== +ST.filterBox) return false; }
     if (!q) return true;
@@ -783,24 +989,44 @@ function renderList(){
   });
   rows.sort(function(a, b){ return (b.createdAt || "") < (a.createdAt || "") ? -1 : 1; });
 
-  var bc = boxCounts(), dueN = dueItems().length;
+  var bc = boxCounts(scope), dueN = dueIn(ST.filterBoxId).length;
+  var bic = boxIdCounts();
   m.innerHTML =
     '<input class="search" id="q" type="search" placeholder="さがす" value="' + esc(ST.q) + '">' +
+    /* ボックスの絞り込み。ボックスがまだ無いうちは出さない */
+    (ST.boxes.length
+      ? '<div class="filters" id="flb">' +
+          '<button data-b="all"' + (ST.filterBoxId === "all" ? ' class="on"' : "") +
+            ">すべて " + ST.items.length + "</button>" +
+          sortBoxes().map(function(b){
+            return '<button data-b="' + esc(b.id) + '"' + (ST.filterBoxId === b.id ? ' class="on"' : "") + ">" +
+              '<i class="bxdot" style="background:' + esc(b.color) + '"></i>' +
+              esc(b.name) + " " + (bic[b.id] || 0) + "</button>";
+          }).join("") +
+          '<button data-b="none"' + (ST.filterBoxId === "none" ? ' class="on"' : "") +
+            ">未分類 " + (bic[""] || 0) + "</button>" +
+        "</div>"
+      : "") +
+    /* レベルの絞り込み */
     '<div class="filters" id="fl">' +
-      '<button data-f="all"' + (ST.filterBox === "all" ? ' class="on"' : "") + ">すべて " + ST.items.length + "</button>" +
+      '<button data-f="all"' + (ST.filterBox === "all" ? ' class="on"' : "") + ">すべて " + scope.length + "</button>" +
       '<button data-f="due"' + (ST.filterBox === "due" ? ' class="on"' : "") + ">今日 " + dueN + "</button>" +
       [1,2,3,4,5].map(function(b){
         return '<button data-f="' + b + '"' + (ST.filterBox === String(b) ? ' class="on"' : "") +
-               ">箱" + b + " " + bc[b] + "</button>";
+               ">レベル" + b + " " + bc[b] + "</button>";
       }).join("") +
     "</div>" +
     (rows.length ? rows.slice(0, 400).map(function(it){
       var due = (it.nextDue || t) <= t;
       var when = due ? "今日" : (daysBetween(t, it.nextDue) + "日後");
+      var bx = boxById(it.boxId);
       return '<button class="item" data-id="' + esc(it.id) + '">' +
         '<div class="ja">' + esc(it.japanese || "（日本語なし）") + "</div>" +
         '<div class="en">' + esc(it.english || "（英語なし）") + "</div>" +
-        '<div class="m"><span class="tag b">箱' + (it.box || 1) + "</span>" +
+        '<div class="m">' +
+        (bx ? '<span class="tag bx"><i class="bxdot" style="background:' + esc(bx.color) + '"></i>' +
+              esc(bx.name) + "</span>" : "") +
+        '<span class="tag b">レベル' + (it.box || 1) + "</span>" +
         '<span class="tag' + (due ? " due" : "") + '">' + esc(when) + "</span>" +
         (it.sourceApp && it.sourceApp !== "manual"
           ? '<span class="tag">' + esc(it.sourceApp) + "</span>" : "") +
@@ -808,6 +1034,9 @@ function renderList(){
     }).join("") : '<div class="empty"><p>見つかりません</p></div>') +
     (rows.length > 400 ? '<div class="empty"><p>ほか ' + (rows.length - 400) + " 件</p></div>" : "") +
     '<button class="btn" id="lAdd" style="margin-top:12px">項目を追加</button>' +
+    '<div class="row" style="margin-top:9px">' +
+      '<button class="btn2" id="lBoxes">ボックスを整理</button>' +
+    "</div>" +
     '<div class="row" style="margin-top:9px">' +
       '<button class="btn2" id="lCsv">CSV 読み込み</button>' +
       '<button class="btn2" id="lJson">JSON 読み込み</button>' +
@@ -823,6 +1052,9 @@ function renderList(){
       var n = $("#q"); if (n){ n.focus(); try{ n.setSelectionRange(pos, pos); }catch(e){} }
     }, 200);
   };
+  Array.prototype.forEach.call(m.querySelectorAll("#flb button"), function(b){
+    b.onclick = function(){ ST.filterBoxId = b.dataset.b; render(); };
+  });
   Array.prototype.forEach.call(m.querySelectorAll("#fl button"), function(b){
     b.onclick = function(){ ST.filterBox = b.dataset.f; render(); };
   });
@@ -833,6 +1065,7 @@ function renderList(){
     };
   });
   $("#lAdd").onclick = function(){ openEditor(null); };
+  $("#lBoxes").onclick = openBoxes;
   $("#lCsv").onclick = pickCsv;
   $("#lJson").onclick = pickJson;
   $("#lExp").onclick = exportJson;
@@ -844,6 +1077,20 @@ function renderList(){
 function openSheet(html){ $("#sheet").innerHTML = html; $("#scrim").classList.add("on"); }
 function closeSheet(){ $("#scrim").classList.remove("on"); }
 
+/* ボックスを選ぶ <select> の中身。未分類を頭に置く */
+function boxOptions(cur){
+  return '<option value=""' + (!boxById(cur) ? " selected" : "") + ">未分類</option>" +
+    sortBoxes().map(function(b){
+      return '<option value="' + esc(b.id) + '"' + (cur === b.id ? " selected" : "") +
+             ">" + esc(b.name) + "</option>";
+    }).join("");
+}
+/* 新しい項目の行き先は、いま見ている絞り込みに合わせておく */
+function defaultBoxId(){
+  var f = ST.view === "list" ? ST.filterBoxId : ST.boxFilter;
+  return boxById(f) ? f : null;
+}
+
 function openEditor(item){
   var isNew = !item;
   openSheet(
@@ -854,11 +1101,13 @@ function openEditor(item){
       '<textarea id="eEn" placeholder="He is my older brother.">' + esc(item ? item.english : "") + "</textarea></div>" +
     '<div class="fld"><label>メモ（任意）</label>' +
       '<input id="eNote" type="text" value="' + esc(item ? item.note : "") + '"></div>' +
+    '<div class="fld"><label>ボックス</label>' +
+      '<select id="eBoxId">' + boxOptions(item ? item.boxId : defaultBoxId()) + "</select></div>" +
     (isNew ? "" :
-      '<div class="fld"><label>箱（' + BOX_DAYS[item.box || 1] + " 日ごと)</label>" +
+      '<div class="fld"><label>レベル（' + BOX_DAYS[item.box || 1] + " 日ごと)</label>" +
         '<select id="eBox">' + [1,2,3,4,5].map(function(b){
           return '<option value="' + b + '"' + ((item.box||1) === b ? " selected" : "") +
-                 ">箱" + b + "（" + BOX_DAYS[b] + "日後）</option>";
+                 ">レベル" + b + "（" + BOX_DAYS[b] + "日後）</option>";
         }).join("") + "</select></div>" +
       '<div class="muted" style="margin-bottom:14px">次に出るのは ' + esc(item.nextDue) + "　" +
         "／ 入れたのは " + esc((item.createdAt || "").slice(0, 10)) + "</div>") +
@@ -873,14 +1122,16 @@ function openEditor(item){
   $("#eSave").onclick = function(){
     var ja = trim($("#eJa").value), en = trim($("#eEn").value);
     if (!ja && !en){ toast("日本語か英語のどちらかは入れてください"); return; }
+    var bxid = $("#eBoxId").value || null;
     if (isNew){
-      var nw = newItem(ja, en, $("#eNote").value, "manual");
+      var nw = newItem(ja, en, $("#eNote").value, "manual", bxid);
       ST.items.push(nw);
       DB.put("items", nw).then(function(){
         closeSheet(); render(); toast("追加しました"); scheduleSync();
       });
     } else {
       item.japanese = ja; item.english = en; item.note = trim($("#eNote").value);
+      item.boxId = bxid;
       var nb = +$("#eBox").value;
       if (nb !== item.box){
         item.box = nb;
@@ -904,8 +1155,199 @@ function openEditor(item){
 }
 
 /* ==========================================================================
+   ボックスの管理
+
+   一覧・追加・名前と色の変更・並べ替え・削除。
+   削除のときは、中の項目をどうするか必ず聞く。
+   ========================================================================== */
+function openBoxes(){
+  var c = boxIdCounts();
+  var list = sortBoxes();
+  openSheet(
+    "<h2>ボックス</h2>" +
+    '<div class="note-box">項目をまとめる入れ物です。' +
+      "レベル1〜5（間隔反復の段階）とは別ものです。</div>" +
+    (list.length ? list.map(function(b, i){
+      return '<div class="bxrow">' +
+        '<i class="bxdot big" style="background:' + esc(b.color) + '"></i>' +
+        '<button class="bxname" data-edit="' + esc(b.id) + '">' + esc(b.name) +
+          "<small>" + (c[b.id] || 0) + " 件</small></button>" +
+        '<button class="ordb" data-up="' + esc(b.id) + '"' + (i === 0 ? " disabled" : "") + ">↑</button>" +
+        '<button class="ordb" data-down="' + esc(b.id) + '"' +
+          (i === list.length - 1 ? " disabled" : "") + ">↓</button>" +
+        "</div>";
+    }).join("")
+      : '<div class="muted" style="margin-bottom:10px">' +
+        "まだボックスがありません。作らなくても、未分類のまま使えます。</div>") +
+    '<div class="muted" style="margin:10px 0 14px">未分類　' + (c[""] || 0) + " 件</div>" +
+    '<div class="sheet-btns">' +
+      '<button class="b-sec" id="bxAdd">ボックスを作る</button>' +
+      '<button class="b-pri" id="bxClose">閉じる</button>' +
+    "</div>"
+  );
+  $("#bxAdd").onclick = function(){ openBoxEdit(null); };
+  $("#bxClose").onclick = closeSheet;
+  Array.prototype.forEach.call($("#sheet").querySelectorAll("[data-edit]"), function(b){
+    b.onclick = function(){ openBoxEdit(boxById(b.dataset.edit)); };
+  });
+  Array.prototype.forEach.call($("#sheet").querySelectorAll("[data-up]"), function(b){
+    b.onclick = function(){ moveBox(b.dataset.up, -1); };
+  });
+  Array.prototype.forEach.call($("#sheet").querySelectorAll("[data-down]"), function(b){
+    b.onclick = function(){ moveBox(b.dataset.down, 1); };
+  });
+}
+/* 並べ替え。order が同じ数字で並んでいることもあるので、動かすたびに振り直す */
+function moveBox(id, dir){
+  var list = sortBoxes(), i = -1;
+  list.forEach(function(b, k){ if (b.id === id) i = k; });
+  var j = i + dir;
+  if (i < 0 || j < 0 || j >= list.length) return;
+  var t = list[i]; list[i] = list[j]; list[j] = t;
+  var now = new Date().toISOString();
+  list.forEach(function(b, k){
+    if ((b.order | 0) !== k){ b.order = k; b.updatedAt = now; }
+  });
+  ST.boxes = list;
+  DB.putAll("boxes", list).then(function(){ openBoxes(); render(); scheduleSync(); });
+}
+
+function openBoxEdit(box){
+  var isNew = !box;
+  var chosen = box ? String(box.color).toUpperCase() : nextColor();
+  var n = box ? itemsIn(box.id).length : 0;
+  openSheet(
+    "<h2>" + (isNew ? "ボックスを作る" : "ボックスを直す") + "</h2>" +
+    '<div class="fld"><label>名前</label>' +
+      '<input id="bName" type="text" placeholder="My Dictionary" value="' +
+      esc(box ? box.name : "") + '"></div>' +
+    '<div class="fld"><label>色</label><div class="swatches" id="bSw">' +
+      BOX_COLORS.map(function(c){
+        return '<button class="sw' + (chosen === c ? " on" : "") + '" data-c="' + c +
+               '" style="background:' + c + '" aria-label="' + c + '"></button>';
+      }).join("") + "</div></div>" +
+    (isNew ? "" : '<div class="muted" style="margin-bottom:14px">いま ' + n + " 件入っています</div>") +
+    '<div class="sheet-btns">' +
+      '<button class="b-sec" id="bCancel">やめる</button>' +
+      '<button class="b-pri" id="bSave">' + (isNew ? "作る" : "保存する") + "</button>" +
+    "</div>" +
+    (isNew ? "" : '<div class="sheet-btns" style="margin-top:9px">' +
+      '<button class="b-del" id="bDel">このボックスを消す</button></div>')
+  );
+  Array.prototype.forEach.call($("#sheet").querySelectorAll(".sw"), function(b){
+    b.onclick = function(){
+      chosen = b.dataset.c;
+      Array.prototype.forEach.call($("#sheet").querySelectorAll(".sw"), function(x){
+        x.classList.toggle("on", x === b);
+      });
+    };
+  });
+  $("#bCancel").onclick = openBoxes;
+  $("#bSave").onclick = function(){
+    var nm = trim($("#bName").value);
+    if (!nm){ toast("名前を入れてください"); return; }
+    if (isNew){
+      var nb = newBox(nm, chosen, nextOrder());
+      ST.boxes.push(nb); sortBoxes();
+      DB.put("boxes", nb).then(function(){
+        openBoxes(); render(); toast("作りました"); scheduleSync();
+      });
+    } else {
+      box.name = nm; box.color = chosen; box.updatedAt = new Date().toISOString();
+      DB.put("boxes", box).then(function(){
+        openBoxes(); render(); toast("保存しました"); scheduleSync();
+      });
+    }
+  };
+  var del = $("#bDel");
+  if (del) del.onclick = function(){ openBoxDelete(box); };
+}
+
+/* 消すときは、中の項目をどうするかを必ず聞く */
+function openBoxDelete(box){
+  var n = itemsIn(box.id).length;
+  openSheet(
+    "<h2>「" + esc(box.name) + "」を消す</h2>" +
+    '<div class="note-box">中に <b>' + n + "</b> 件あります。" +
+      (n ? "中の項目をどうしますか。" : "空のボックスです。") + "</div>" +
+    '<button class="btn2" id="bdKeep">項目は未分類にして残す</button>' +
+    '<button class="btn2 b-del" id="bdWipe" style="margin-top:9px">項目ごと消す（' +
+      n + " 件）</button>" +
+    '<button class="btn2" id="bdCancel" style="margin-top:9px">やめる</button>'
+  );
+  $("#bdCancel").onclick = function(){ openBoxEdit(box); };
+  $("#bdKeep").onclick = function(){
+    deleteBox(box, false).then(function(){ openBoxes(); toast("消しました（項目は未分類へ）"); });
+  };
+  $("#bdWipe").onclick = function(){
+    if (n && !confirm("「" + box.name + "」の項目 " + n + " 件も消します。よろしいですか？")) return;
+    deleteBox(box, true).then(function(){ openBoxes(); toast("ボックスと項目を消しました"); });
+  };
+}
+function deleteBox(box, wipeItems){
+  var members = itemsIn(box.id);
+  var jobs = [];
+  if (wipeItems){
+    var now = Date.now();
+    members.forEach(function(it){ ST.tombs[it.id] = now; jobs.push(DB.del("items", it.id)); });
+    ST.items = ST.items.filter(function(x){ return x.boxId !== box.id; });
+    pruneTombs(ST.tombs);
+    jobs.push(saveTombs());
+  } else {
+    /* 消えたボックスを指したままにしない。未分類に倒す */
+    members.forEach(function(it){ it.boxId = null; });
+    jobs.push(DB.putAll("items", members));
+  }
+  ST.boxes = ST.boxes.filter(function(b){ return b.id !== box.id; });
+  jobs.push(DB.del("boxes", box.id));
+  jobs.push(recordBoxTomb(box.id));
+  return Promise.all(jobs).then(function(){
+    normalizeBoxFilter();
+    render(); scheduleSync();
+  });
+}
+
+/* ==========================================================================
    入出力
    ========================================================================== */
+/* 取り込み先を選ばせる。選ぶものが無いとき（ボックスがまだ無く、作る当ても
+   無いとき）は聞かずに未分類へ入れる */
+function askImportBox(kind, cb){
+  var wantNew = (SOURCE_BOXES.indexOf(kind) >= 0 && !boxByName(kind)) ? kind : "";
+  if (!ST.boxes.length && !wantNew){ cb(null); return; }
+  var same = boxByName(kind);
+  var def = same ? same.id : (wantNew ? "@new" : "");
+  openSheet(
+    "<h2>どこに入れますか</h2>" +
+    '<div class="note-box">' + (kind ? esc(kind) + " の書き出しです。" : "") +
+      "入れる先のボックスを選びます。あとから項目ごとに変えられます。</div>" +
+    '<div class="fld"><label>ボックス</label><select id="imBox">' +
+      '<option value=""' + (def === "" ? " selected" : "") + ">未分類</option>" +
+      (wantNew ? '<option value="@new"' + (def === "@new" ? " selected" : "") +
+                 ">「" + esc(wantNew) + "」を作って入れる</option>" : "") +
+      sortBoxes().map(function(b){
+        return '<option value="' + esc(b.id) + '"' + (def === b.id ? " selected" : "") +
+               ">" + esc(b.name) + "</option>";
+      }).join("") +
+    "</select></div>" +
+    '<div class="sheet-btns">' +
+      '<button class="b-sec" id="imCancel">やめる</button>' +
+      '<button class="b-pri" id="imGo">取り込む</button>' +
+    "</div>"
+  );
+  $("#imCancel").onclick = closeSheet;
+  $("#imGo").onclick = function(){
+    var v = $("#imBox").value;
+    if (v === "@new"){
+      var nb = newBox(wantNew, nextColor(), nextOrder());
+      ST.boxes.push(nb); sortBoxes();
+      DB.put("boxes", nb).then(function(){ scheduleSync(); cb(nb.id); });
+      return;
+    }
+    cb(v || null);
+  };
+}
+
 function pickFile(cb){
   var inp = document.createElement("input");
   inp.type = "file";
@@ -955,17 +1397,19 @@ function pickCsv(){
     if (/^(日本語|japanese|ja|和文)$/.test(head[0]) || /^(英語|english|en|英文)$/.test(head[1] || "")){
       rows = rows.slice(1);
     }
-    var add = [], skip = 0;
-    rows.forEach(function(r){
-      var ja = trim(r[0]), en = trim(r[1]);
-      if (!ja && !en){ skip++; return; }
-      add.push(newItem(ja, en, r[2], "csv"));
-    });
-    if (!add.length){ toast("読める行がありませんでした"); return; }
-    ST.items = ST.items.concat(add);
-    DB.putAll("items", add).then(function(){
-      closeSheet(); render(); scheduleSync();
-      toast(add.length + " 件を入れました" + (skip ? "（" + skip + " 行は空)" : ""));
+    askImportBox("", function(boxId){
+      var add = [], skip = 0;
+      rows.forEach(function(r){
+        var ja = trim(r[0]), en = trim(r[1]);
+        if (!ja && !en){ skip++; return; }
+        add.push(newItem(ja, en, r[2], "csv", boxId));
+      });
+      if (!add.length){ closeSheet(); toast("読める行がありませんでした"); return; }
+      ST.items = ST.items.concat(add);
+      DB.putAll("items", add).then(function(){
+        closeSheet(); render(); scheduleSync();
+        toast(add.length + " 件を入れました" + (skip ? "（" + skip + " 行は空)" : ""));
+      });
     });
   });
 }
@@ -1067,36 +1511,40 @@ function pickJson(){
       return;
     }
 
-    var have = {}, seen = {};
-    ST.items.forEach(function(x){
-      have[x.id] = 1;
-      seen[x.japanese + PAIR_SEP + x.english] = 1;
-    });
+    askImportBox(r.kind, function(boxId){
+      var have = {}, seen = {};
+      ST.items.forEach(function(x){
+        have[x.id] = 1;
+        seen[x.japanese + PAIR_SEP + x.english] = 1;
+      });
 
-    var add = [], dup = 0;
-    r.items.forEach(function(o){
-      var ja = trim(o.japanese), en = trim(o.english);
-      if (!ja && !en) return;
-      if (o.id && have[o.id]){ dup++; return; }
-      var key = ja + PAIR_SEP + en;
-      if (seen[key]){ dup++; return; }        /* 同じ文が二重に入らないように */
-      seen[key] = 1;
-      var it = newItem(ja, en, o.note, o.sourceApp);
-      /* 予定つきで書き出したものは、そのまま引き継ぐ */
-      if (o.id && !have[o.id]) it.id = String(o.id);
-      if (isFinite(o.box) && o.box >= 1 && o.box <= 5) it.box = o.box | 0;
-      if (typeof o.nextDue === "string" && /^\d{4}-\d{2}-\d{2}$/.test(o.nextDue)) it.nextDue = o.nextDue;
-      if (typeof o.createdAt === "string") it.createdAt = o.createdAt;
-      if (typeof o.lastReviewedAt === "string") it.lastReviewedAt = o.lastReviewedAt;
-      have[it.id] = 1;
-      add.push(it);
-    });
+      var add = [], dup = 0;
+      r.items.forEach(function(o){
+        var ja = trim(o.japanese), en = trim(o.english);
+        if (!ja && !en) return;
+        if (o.id && have[o.id]){ dup++; return; }
+        var key = ja + PAIR_SEP + en;
+        if (seen[key]){ dup++; return; }        /* 同じ文が二重に入らないように */
+        seen[key] = 1;
+        var it = newItem(ja, en, o.note, o.sourceApp, boxId);
+        /* 予定つきで書き出したものは、そのまま引き継ぐ */
+        if (o.id && !have[o.id]) it.id = String(o.id);
+        if (isFinite(o.box) && o.box >= 1 && o.box <= 5) it.box = o.box | 0;
+        if (typeof o.nextDue === "string" && /^\d{4}-\d{2}-\d{2}$/.test(o.nextDue)) it.nextDue = o.nextDue;
+        if (typeof o.createdAt === "string") it.createdAt = o.createdAt;
+        if (typeof o.lastReviewedAt === "string") it.lastReviewedAt = o.lastReviewedAt;
+        have[it.id] = 1;
+        add.push(it);
+      });
 
-    if (!add.length){ toast("すでに入っているものだけでした（" + dup + " 件）"); return; }
-    ST.items = ST.items.concat(add);
-    DB.putAll("items", add).then(function(){
-      closeSheet(); render(); scheduleSync();
-      toast(r.kind + " から " + add.length + " 件" + (dup ? "（" + dup + " 件は重複)" : ""));
+      if (!add.length){
+        closeSheet(); toast("すでに入っているものだけでした（" + dup + " 件）"); return;
+      }
+      ST.items = ST.items.concat(add);
+      DB.putAll("items", add).then(function(){
+        closeSheet(); render(); scheduleSync();
+        toast(r.kind + " から " + add.length + " 件" + (dup ? "（" + dup + " 件は重複)" : ""));
+      });
     });
   });
 }
@@ -1111,7 +1559,7 @@ function download(name, text, mime){
 function exportJson(){
   download("fukushu-queue-" + today() + ".json",
     JSON.stringify({ app:"fukushu-queue", v:1, at:new Date().toISOString(),
-                     days:ST.days, items:ST.items }, null, 2));
+                     days:ST.days, boxes:ST.boxes, items:ST.items }, null, 2));
   toast("書き出しました");
 }
 
@@ -1122,7 +1570,8 @@ function exportJson(){
    サーバを持たないので、置き場を GitHub の Gist に借りる。
    トークンは gist だけの権限で足り、この端末の localStorage にしか置かない。
 
-   同期するのはこのアプリの持ちものぜんぶ（項目・箱・次回の日・記録・墓標）。
+   同期するのはこのアプリの持ちものぜんぶ
+   （項目・ボックス・レベル・次回の日・記録・墓標）。
    項目はこのアプリが持っているデータなので、丸ごとやり取りしてよい。
    ========================================================================== */
 var SY = {
@@ -1174,7 +1623,8 @@ function gh(url, method, body){
 
 function localPayload(){
   return { app:"fukushu-queue", v:1, at:new Date().toISOString(),
-           items:ST.items, days:ST.days, tombs:ST.tombs };
+           items:ST.items, boxes:ST.boxes, days:ST.days,
+           tombs:ST.tombs, boxTombs:ST.boxTombs };
 }
 function gistCreate(){
   var files = {}; files[SY.FILE] = { content: JSON.stringify(localPayload(), null, 2) };
@@ -1182,11 +1632,12 @@ function gistCreate(){
             JSON.stringify({ description:"復習キューの中身（消さないでください）",
                              public:false, files:files })).then(function(j){ return j.id; });
 }
+function EMPTY_REMOTE(){ return { items:[], boxes:[], days:{}, tombs:{}, boxTombs:{} }; }
 function gistRead(){
   return gh("https://api.github.com/gists/" + encodeURIComponent(syncGist()), "GET")
     .then(function(json){
       var f = json.files && json.files[SY.FILE];
-      if (!f) return { items:[], days:{}, tombs:{} };   // 作りたての Gist
+      if (!f) return EMPTY_REMOTE();   // 作りたての Gist
 
       /* 1MB を超えると content が途中で切られて返る。切られたまま読むと
          JSON にならず、「向こうは空だ」と誤解して相手を消してしまう */
@@ -1201,7 +1652,7 @@ function gistRead(){
       return body.then(function(text){
         if (!text){
           if (truncated) throw new Error("同期データを読み込めませんでした");
-          return { items:[], days:{}, tombs:{} };
+          return EMPTY_REMOTE();
         }
         var d;
         try{ d = JSON.parse(text); }
@@ -1210,8 +1661,10 @@ function gistRead(){
           throw new Error("同期データが読めません（上書きせずに中止しました）");
         }
         return { items: Array.isArray(d.items) ? d.items : [],
+                 boxes: Array.isArray(d.boxes) ? d.boxes : [],
                  days:  (d.days  && typeof d.days  === "object") ? d.days  : {},
-                 tombs: (d.tombs && typeof d.tombs === "object") ? d.tombs : {} };
+                 tombs: (d.tombs && typeof d.tombs === "object") ? d.tombs : {},
+                 boxTombs: (d.boxTombs && typeof d.boxTombs === "object") ? d.boxTombs : {} };
       });
     });
 }
@@ -1234,6 +1687,42 @@ function mergeRemote(rem){
     if (!ST.tombs[id] || ST.tombs[id] < t){ ST.tombs[id] = t; changed++; }
   });
 
+  /* ボックスの墓標。消したボックスは連れ戻さない */
+  Object.keys(rem.boxTombs || {}).forEach(function(id){
+    var t = rem.boxTombs[id];
+    if (!ST.boxTombs[id] || ST.boxTombs[id] < t){ ST.boxTombs[id] = t; changed++; }
+  });
+
+  /* ボックスは id で突き合わせ、updatedAt が新しいほうを採る */
+  var bById = {};
+  ST.boxes.forEach(function(b){ bById[b.id] = b; });
+  (rem.boxes || []).forEach(function(o){
+    if (!o || !o.id) return;
+    if (ST.boxTombs[o.id]) return;
+    var mineB = bById[o.id];
+    if (!mineB){
+      var now = new Date().toISOString();
+      var nb = { id:String(o.id), name:trim(o.name) || "名前なし",
+                 color:o.color || BOX_COLORS[0],
+                 order:isFinite(o.order) ? (o.order | 0) : 0,
+                 createdAt:o.createdAt || now,
+                 updatedAt:o.updatedAt || o.createdAt || now };
+      bById[nb.id] = nb; ST.boxes.push(nb); changed++;
+      return;
+    }
+    if ((o.updatedAt || "") > (mineB.updatedAt || "")){
+      ["name","color","order","createdAt","updatedAt"].forEach(function(k){
+        if (o[k] !== undefined) mineB[k] = o[k];
+      });
+      changed++;
+    }
+  });
+  /* こちらで消したボックスを、手元からも落としておく */
+  var boxesBefore = ST.boxes.length;
+  ST.boxes = ST.boxes.filter(function(b){ return !ST.boxTombs[b.id]; });
+  var boxesDropped = boxesBefore - ST.boxes.length;
+  sortBoxes();
+
   var byId = {};
   ST.items.forEach(function(x){ byId[x.id] = x; });
 
@@ -1246,7 +1735,7 @@ function mergeRemote(rem){
     if (!mine){ byId[o.id] = o; ST.items.push(o); changed++; return; }
     if (stampOf(o) > stampOf(mine)){
       /* 新しいほうで置き換える。中身も予定もまとめて向こうに合わせる */
-      ["japanese","english","note","sourceApp","box","nextDue","createdAt","lastReviewedAt"]
+      ["japanese","english","note","sourceApp","boxId","box","nextDue","createdAt","lastReviewedAt"]
         .forEach(function(k){ if (o[k] !== undefined) mine[k] = o[k]; });
       changed++;
     }
@@ -1267,7 +1756,15 @@ function mergeRemote(rem){
     if (!ST.days[d] || ST.days[d] < n){ ST.days[d] = n; changed++; }
   });
 
-  return { changed: changed, dropped: dropped };
+  /* 消えたボックスを指している項目は未分類に倒す。宙ぶらりんにしない */
+  var alive = {};
+  ST.boxes.forEach(function(b){ alive[b.id] = 1; });
+  ST.items.forEach(function(it){
+    if (it.boxId === undefined) it.boxId = null;
+    if (it.boxId && !alive[it.boxId]){ it.boxId = null; changed++; }
+  });
+
+  return { changed: changed, dropped: dropped, boxesDropped: boxesDropped };
 }
 
 function trySync(silent){
@@ -1283,13 +1780,17 @@ function trySync(silent){
   return gistRead()
     .then(function(rem){
       var r = mergeRemote(rem);
+      normalizeBoxFilter();
       /* 手元の中身をまるごと書き戻す。IndexedDB にも合わせておく */
       return DB.putAll("items", ST.items)
-        .then(saveDays).then(saveTombs)
+        .then(function(){ return DB.putAll("boxes", ST.boxes); })
+        .then(saveDays).then(saveTombs).then(saveBoxTombs)
         .then(function(){
           return Promise.all(Object.keys(rem.tombs || {}).map(function(id){
             return DB.del("items", id);
-          }));
+          }).concat(Object.keys(ST.boxTombs).map(function(id){
+            return DB.del("boxes", id);
+          })));
         })
         .then(gistWrite)
         .then(function(){ return r; });
@@ -1351,7 +1852,12 @@ function openCfg(){
         '<button class="btn2" id="cTest" style="margin-bottom:14px">声を試す</button>'
       : '<div class="note-box">この端末は読み上げに対応していません。音声のモードは使えません。</div>') +
 
-    '<h2 class="sec" style="margin-top:4px">同期<span style="float:right;color:' +
+    '<h2 class="sec" style="margin-top:4px">ボックス</h2>' +
+    '<div class="sheet-btns">' +
+      '<button class="b-sec" id="cBoxes">ボックスを整理する（' + ST.boxes.length + "）</button>" +
+    "</div>" +
+
+    '<h2 class="sec" style="margin-top:22px">同期<span style="float:right;color:' +
       (syncReady() ? (syncAuto() ? "var(--ok)" : "var(--warn)") : "var(--dim)") + '">' +
       (syncReady() ? (syncAuto() ? "自動ON" : "手動") : "未設定") + "</span></h2>" +
     '<div class="note-box">' +
@@ -1386,7 +1892,7 @@ function openCfg(){
       '<button class="b-sec" id="cCsv">CSV を読み込む</button>' +
     "</div>" +
     '<div class="note-box" style="margin-top:14px">' +
-      "書き出した JSON には、予定（箱と次回の日）も入ります。" +
+      "書き出した JSON には、予定（レベルと次回の日）も入ります。" +
       "別の端末で読み込めば、続きから回せます。" +
     "</div>" +
     '<div class="sheet-btns" style="margin-top:6px">' +
@@ -1434,6 +1940,7 @@ function openCfg(){
       paintSyncBtn(""); openCfg(); toast("作りました。自動同期をONにしました");
     }).catch(function(e){ toast("作れませんでした: " + ((e && e.message) || "通信エラー")); });
   };
+  $("#cBoxes").onclick = openBoxes;
   $("#cExp").onclick = exportJson;
   $("#cImp").onclick = pickJson;
   $("#cCsv").onclick = pickCsv;
@@ -1441,8 +1948,10 @@ function openCfg(){
   $("#cWipe").onclick = function(){
     if (!confirm("項目も予定も、ぜんぶ消えます。よろしいですか？")) return;
     if (!confirm("本当に消しますか？　元に戻せません。")) return;
-    Promise.all([DB.clear("items"), DB.clear("meta")]).then(function(){
-      ST.items = []; ST.days = {};
+    Promise.all([DB.clear("items"), DB.clear("meta"), DB.clear("boxes")]).then(function(){
+      ST.items = []; ST.days = {}; ST.tombs = {};
+      ST.boxes = []; ST.boxTombs = {};
+      ST.boxFilter = "all"; ST.filterBoxId = "all"; saveBoxFilter();
       closeSheet(); ST.view = "home"; render(); toast("消しました");
     });
   };
