@@ -240,7 +240,7 @@ h2.sec{font-size:13px;color:var(--dim);margin:22px 0 9px;font-weight:700}
    外のライブラリは使わない。保存は IndexedDB。パスは全部相対。
    ========================================================================== */
 
-var APP_VERSION = "v1.4 (2026-09-05)";
+var APP_VERSION = "v1.5 (2026-09-05)";
 
 /* ---------- 小道具 ---------- */
 var $ = function(s){ return document.querySelector(s); };
@@ -1565,10 +1565,14 @@ function normalizeJson(d){
       if (!o || typeof o !== "object") return;
       out.push({ japanese:trim(o.japanese), english:trim(o.english), note:trim(o.note),
                  sourceApp:trim(o.sourceApp) || "json",
-                 id:o.id, box:o.box, nextDue:o.nextDue,
+                 id:o.id, box:o.box, nextDue:o.nextDue, boxId:o.boxId,
                  createdAt:o.createdAt, lastReviewedAt:o.lastReviewedAt });
     });
-    return { kind:kind, items:out };
+    /* ボックスの割り当てが入っているなら、行き先を聞かずにそのまま復元する。
+       仕分けたものを書き出して読み込ませる、という渡し方ができるように。 */
+    var boxes = (d && Array.isArray(d.boxes)) ? d.boxes : [];
+    var hasAssign = out.some(function(o){ return o.boxId; });
+    return { kind:kind, items:out, boxes:boxes, restore: !!(boxes.length && hasAssign) };
   }
 
   /* My Dictionary … 裸の配列で en / ja */
@@ -1648,14 +1652,38 @@ function pickJson(){
       return;
     }
 
-    askImportBox(r.kind, function(boxId){
+    /* ボックスごと復元する経路。足りないボックスは作り、同じ名前があれば使う */
+    var restoreMap = null;
+    if (r.restore){
+      restoreMap = {};
+      var byName = {};
+      ST.boxes.forEach(function(b){ byName[b.name] = b; });
+      r.boxes.forEach(function(o){
+        if (!o || !o.id) return;
+        var nm = trim(o.name) || "名前なし";
+        var bx = byName[nm];
+        if (!bx){
+          bx = newBox(nm, o.color || nextColor(), isFinite(o.order) ? o.order : nextOrder());
+          byName[nm] = bx; ST.boxes.push(bx);
+          DB.put("boxes", bx).catch(function(){});
+        }
+        restoreMap[o.id] = bx.id;      /* 向こうの id → こちらの id */
+      });
+      sortBoxes();
+    }
+
+    var withBox = function(boxId, run){
+      if (restoreMap) run(null); else askImportBox(r.kind, run);
+    };
+
+    withBox(null, function(boxId){
       var have = {}, seen = {};
       ST.items.forEach(function(x){
         have[x.id] = 1;
         seen[x.japanese + PAIR_SEP + x.english] = 1;
       });
 
-      var add = [], dup = 0;
+      var add = [], dup = 0, placed = 0;
       r.items.forEach(function(o){
         var ja = trim(o.japanese), en = trim(o.english);
         if (!ja && !en) return;
@@ -1663,7 +1691,10 @@ function pickJson(){
         var key = ja + PAIR_SEP + en;
         if (seen[key]){ dup++; return; }        /* 同じ文が二重に入らないように */
         seen[key] = 1;
-        var it = newItem(ja, en, o.note, o.sourceApp, boxId);
+        /* 復元のときは、書き出しに入っていた割り当てを引き継ぐ */
+        var target = boxId;
+        if (restoreMap && o.boxId && restoreMap[o.boxId]){ target = restoreMap[o.boxId]; placed++; }
+        var it = newItem(ja, en, o.note, o.sourceApp, target);
         /* 予定つきで書き出したものは、そのまま引き継ぐ */
         if (o.id && !have[o.id]) it.id = String(o.id);
         if (isFinite(o.box) && o.box >= 1 && o.box <= 5) it.box = o.box | 0;
@@ -1680,7 +1711,9 @@ function pickJson(){
       ST.items = ST.items.concat(add);
       DB.putAll("items", add).then(function(){
         closeSheet(); render(); scheduleSync();
-        toast(r.kind + " から " + add.length + " 件" + (dup ? "（" + dup + " 件は重複)" : ""));
+        toast(r.kind + " から " + add.length + " 件" +
+              (placed ? "／" + placed + " 件はボックスごと復元" : "") +
+              (dup ? "（" + dup + " 件は重複)" : ""));
       });
     });
   });
