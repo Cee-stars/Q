@@ -240,7 +240,7 @@ h2.sec{font-size:13px;color:var(--dim);margin:22px 0 9px;font-weight:700}
    外のライブラリは使わない。保存は IndexedDB。パスは全部相対。
    ========================================================================== */
 
-var APP_VERSION = "v1.5 (2026-09-05)";
+var APP_VERSION = "v1.6 (2026-09-05)";
 
 /* ---------- 小道具 ---------- */
 var $ = function(s){ return document.querySelector(s); };
@@ -297,9 +297,15 @@ function mmss(sec){
 var BOX_DAYS = { 1:1, 2:3, 3:7, 4:14, 5:30 };
 var MAX_BOX = 5;
 
+/* 中身を触ったことを残す。ここを通さない変更は相手に届かない */
+function touchItem(it){
+  if (it) it.updatedAt = new Date().toISOString();
+  return it;
+}
 function applyGrade(item, ok){
   item.box = ok ? Math.min(MAX_BOX, (item.box || 1) + 1) : 1;
   item.lastReviewedAt = new Date().toISOString();
+  item.updatedAt = item.lastReviewedAt;
   item.nextDue = addDays(today(), BOX_DAYS[item.box]);
   return item;
 }
@@ -312,6 +318,7 @@ function newItem(japanese, english, note, sourceApp, boxId){
     note: trim(note),
     sourceApp: trim(sourceApp) || "manual",
     boxId: boxId || null,      // どのボックスに入れるか。null は未分類
+    updatedAt: now,            // 中身を触った時刻。同期の勝ち負けに使う
     box: 1,
     nextDue: today(),          // 入れた日から出せる
     createdAt: now,
@@ -1189,6 +1196,7 @@ function openMoveSheet(){
       if (!ST.picked[it.id]) return;
       if (it.boxId === toId) return;
       it.boxId = toId;
+      touchItem(it);
       moved.push(it);
     });
     if (!moved.length){ closeSheet(); toast("もうそのボックスに入っています"); return; }
@@ -1262,6 +1270,7 @@ function openEditor(item){
       });
     } else {
       item.japanese = ja; item.english = en; item.note = trim($("#eNote").value);
+      touchItem(item);
       item.boxId = bxid;
       var nb = +$("#eBox").value;
       if (nb !== item.box){
@@ -1535,17 +1544,31 @@ function pickCsv(){
       rows = rows.slice(1);
     }
     askImportBox("", function(boxId){
-      var add = [], skip = 0;
+      /* もう入っているものは飛ばす。同じ表を何度読ませても増えないように。
+         ファイルの中で同じ行が重なっている場合も 1 つにする。 */
+      var seen = {};
+      ST.items.forEach(function(x){ seen[pairKey(x.japanese, x.english)] = 1; });
+
+      var add = [], skip = 0, dup = 0;
       rows.forEach(function(r){
         var ja = trim(r[0]), en = trim(r[1]);
         if (!ja && !en){ skip++; return; }
+        var key = pairKey(ja, en);
+        if (seen[key]){ dup++; return; }
+        seen[key] = 1;
         add.push(newItem(ja, en, r[2], "csv", boxId));
       });
-      if (!add.length){ closeSheet(); toast("読める行がありませんでした"); return; }
+      if (!add.length){
+        closeSheet();
+        toast(dup ? "ぜんぶ入っていました（" + dup + " 件）" : "読める行がありませんでした");
+        return;
+      }
       ST.items = ST.items.concat(add);
       DB.putAll("items", add).then(function(){
         closeSheet(); render(); scheduleSync();
-        toast(add.length + " 件を入れました" + (skip ? "（" + skip + " 行は空)" : ""));
+        toast(add.length + " 件を入れました" +
+              (dup ? "／" + dup + " 件はもう入っていました" : "") +
+              (skip ? "（" + skip + " 行は空)" : ""));
       });
     });
   });
@@ -1634,6 +1657,14 @@ function normalizeJson(d){
 }
 
 var PAIR_SEP = " >>> ";   /* 同じ文の二重取り込みを見るための、組み合わせの鍵 */
+/* 見比べるときは、前後の空白・大文字小文字・連続した空白の違いを無視する。
+   同じ文を別の表から入れると、そこだけ違っていることがよくある */
+function pairKey(ja, en){
+  var norm = function(x){
+    return String(x || "").trim().toLowerCase().replace(/\s+/g, " ");
+  };
+  return norm(ja) + PAIR_SEP + norm(en);
+}
 
 function pickJson(){
   pickFile(function(text){
@@ -1680,7 +1711,7 @@ function pickJson(){
       var have = {}, seen = {};
       ST.items.forEach(function(x){
         have[x.id] = 1;
-        seen[x.japanese + PAIR_SEP + x.english] = 1;
+        seen[pairKey(x.japanese, x.english)] = 1;
       });
 
       var add = [], dup = 0, placed = 0;
@@ -1688,7 +1719,7 @@ function pickJson(){
         var ja = trim(o.japanese), en = trim(o.english);
         if (!ja && !en) return;
         if (o.id && have[o.id]){ dup++; return; }
-        var key = ja + PAIR_SEP + en;
+        var key = pairKey(ja, en);
         if (seen[key]){ dup++; return; }        /* 同じ文が二重に入らないように */
         seen[key] = 1;
         /* 復元のときは、書き出しに入っていた割り当てを引き継ぐ */
@@ -1844,9 +1875,17 @@ function gistWrite(){
             JSON.stringify({ files: files }));
 }
 
-/* いつの情報かの目安。やった時刻が無ければ、入れた時刻で見る */
+/* いつの情報かの目安。
+   採点した時刻だけで見ていると、採点していない変更（文の直し、メモ、
+   ボックスの移し替え）が相手に届かない。触った時刻も見る。
+   updatedAt を持たない古い項目のために、後ろ 2 つを残してある。 */
 function stampOf(it){
-  return (it && (it.lastReviewedAt || it.createdAt)) || "";
+  if (!it) return "";
+  var best = "";
+  [it.updatedAt, it.lastReviewedAt, it.createdAt].forEach(function(x){
+    if (x && x > best) best = x;
+  });
+  return best;
 }
 function mergeRemote(rem){
   var changed = 0;
@@ -1905,7 +1944,8 @@ function mergeRemote(rem){
     if (!mine){ byId[o.id] = o; ST.items.push(o); changed++; return; }
     if (stampOf(o) > stampOf(mine)){
       /* 新しいほうで置き換える。中身も予定もまとめて向こうに合わせる */
-      ["japanese","english","note","sourceApp","boxId","box","nextDue","createdAt","lastReviewedAt"]
+      ["japanese","english","note","sourceApp","boxId","box","nextDue",
+       "createdAt","lastReviewedAt","updatedAt"]
         .forEach(function(k){ if (o[k] !== undefined) mine[k] = o[k]; });
       changed++;
     }
