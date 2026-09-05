@@ -1,8 +1,10 @@
 /* 復習キュー — オフラインでも開けるようにする。
    本体を先に取っておき、ネットが無いときはその写しを出す。 */
-const CACHE = "fq-v1";
+const CACHE = "fq-v2";
 const BASE = new URL("./", self.location).pathname;   // 置き場所が変わっても効く
-const ASSETS = ["./", "./index.html", "./manifest.webmanifest"];
+const ASSETS = ["./", "./index.html", "./manifest.webmanifest",
+                "./icon-192.png", "./icon-512.png", "./icon-maskable-512.png",
+                "./icon-180.png", "./favicon-32.png"];
 
 self.addEventListener("install", e => {
   e.waitUntil(
