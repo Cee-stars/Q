@@ -180,6 +180,15 @@ h2.sec{font-size:13px;color:var(--dim);margin:22px 0 9px;font-weight:700}
 .bxdot.big{width:15px;height:15px}
 .chip{display:inline-flex;align-items:center;gap:6px}
 .filters button{display:inline-flex;align-items:center;gap:5px}
+.item.picked{border-color:var(--acc);background:rgba(255,122,24,.10)}
+.pkmark{float:right;color:var(--acc);font-weight:800;font-size:17px;
+        width:22px;height:22px;border:1px solid var(--line);border-radius:6px;
+        display:inline-grid;place-items:center;margin-left:8px}
+.item.picked .pkmark{border-color:var(--acc)}
+.pkbar{position:sticky;bottom:0;display:flex;align-items:center;gap:12px;
+       background:rgba(18,19,26,.96);backdrop-filter:blur(10px);
+       border-top:1px solid var(--line);padding:12px 2px;margin-top:14px}
+.pkbar span{font-size:14px;font-weight:700}
 .tag.bx{display:inline-flex;align-items:center;gap:5px}
 .bxrow{display:flex;align-items:center;gap:9px;padding:10px 12px;background:var(--panel2);
        border:1px solid var(--line);border-radius:12px;margin-bottom:8px}
@@ -231,7 +240,7 @@ h2.sec{font-size:13px;color:var(--dim);margin:22px 0 9px;font-weight:700}
    外のライブラリは使わない。保存は IndexedDB。パスは全部相対。
    ========================================================================== */
 
-var APP_VERSION = "v1.3 (2026-08-30)";
+var APP_VERSION = "v1.4 (2026-09-05)";
 
 /* ---------- 小道具 ---------- */
 var $ = function(s){ return document.querySelector(s); };
@@ -558,7 +567,9 @@ var ST = {
   view: "home",        // home | session | list
   mode: CFG.mode,
   boxFilter: CFG.boxFilter,  // ホームのボックス絞り込み。覚えておく
-  filterBox: "all",    // 一覧のレベル絞り込み
+  filterBox: "all",
+  picking: false,      // 一覧でまとめて選んでいる最中か
+  picked: {},          // 選んだ項目の id    // 一覧のレベル絞り込み
   filterBoxId: "all",  // 一覧のボックス絞り込み
   q: "",
   ses: null            // セッション中だけ入る
@@ -1032,6 +1043,15 @@ function renderList(){
             ">未分類 " + (bic[""] || 0) + "</button>" +
         "</div>"
       : "") +
+    /* まとめて移す。1 件ずつ開いて直すのは、数があるとつらい */
+    '<div class="row" style="margin-bottom:10px">' +
+      (ST.picking
+        ? '<button class="btn2" id="pkAll">' +
+            (rows.every(function(x){ return ST.picked[x.id]; }) ? "選択を外す" : "表示中をぜんぶ選ぶ") +
+          "</button>" +
+          '<button class="btn2" id="pkOff">やめる</button>'
+        : '<button class="btn2" id="pkOn">まとめて移す</button>') +
+    "</div>" +
     /* レベルの絞り込み */
     '<div class="filters" id="fl">' +
       '<button data-f="all"' + (ST.filterBox === "all" ? ' class="on"' : "") + ">すべて " + scope.length + "</button>" +
@@ -1045,7 +1065,10 @@ function renderList(){
       var due = (it.nextDue || t) <= t;
       var when = due ? "今日" : (daysBetween(t, it.nextDue) + "日後");
       var bx = boxById(it.boxId);
-      return '<button class="item" data-id="' + esc(it.id) + '">' +
+      var on = !!ST.picked[it.id];
+      return '<button class="item' + (ST.picking && on ? " picked" : "") +
+        '" data-id="' + esc(it.id) + '">' +
+        (ST.picking ? '<span class="pkmark">' + (on ? "✓" : "") + "</span>" : "") +
         '<div class="ja">' + esc(it.japanese || "（日本語なし）") + "</div>" +
         '<div class="en">' + esc(it.english || "（英語なし）") + "</div>" +
         '<div class="m">' +
@@ -1058,7 +1081,8 @@ function renderList(){
         "</div></button>";
     }).join("") : '<div class="empty"><p>見つかりません</p></div>') +
     (rows.length > 400 ? '<div class="empty"><p>ほか ' + (rows.length - 400) + " 件</p></div>" : "") +
-    '<button class="btn" id="lAdd" style="margin-top:12px">項目を追加</button>' +
+    (ST.picking ? "" :
+      '<button class="btn" id="lAdd" style="margin-top:12px">項目を追加</button>') +
     '<div class="row" style="margin-top:9px">' +
       '<button class="btn2" id="lBoxes">ボックスを整理</button>' +
     "</div>" +
@@ -1066,7 +1090,10 @@ function renderList(){
       '<button class="btn2" id="lCsv">CSV 読み込み</button>' +
       '<button class="btn2" id="lJson">JSON 読み込み</button>' +
       '<button class="btn2" id="lExp">書き出す</button>' +
-    "</div>";
+    "</div>" +
+    (ST.picking ? '<div class="pkbar"><span id="pkN">' + pickedCount() + " 件</span>" +
+      '<button class="btn" id="pkMove" style="width:auto;padding:12px 20px"' +
+      (pickedCount() ? "" : " disabled") + ">ボックスへ移す</button></div>" : "");
 
   var qi = $("#q");
   qi.oninput = function(){
@@ -1083,17 +1110,96 @@ function renderList(){
   Array.prototype.forEach.call(m.querySelectorAll("#fl button"), function(b){
     b.onclick = function(){ ST.filterBox = b.dataset.f; render(); };
   });
+  var pkOn = $("#pkOn");
+  if (pkOn) pkOn.onclick = function(){ ST.picking = true; ST.picked = {}; render(); };
+  var pkOff = $("#pkOff");
+  if (pkOff) pkOff.onclick = function(){ ST.picking = false; ST.picked = {}; render(); };
+  var pkAll = $("#pkAll");
+  if (pkAll) pkAll.onclick = function(){
+    var all = rows.every(function(x){ return ST.picked[x.id]; });
+    rows.forEach(function(x){ if (all) delete ST.picked[x.id]; else ST.picked[x.id] = 1; });
+    render();
+  };
+  var pkMove = $("#pkMove");
+  if (pkMove) pkMove.onclick = openMoveSheet;
+
   Array.prototype.forEach.call(m.querySelectorAll(".item"), function(b){
     b.onclick = function(){
       var it = ST.items.filter(function(x){ return x.id === b.dataset.id; })[0];
-      if (it) openEditor(it);
+      if (!it) return;
+      if (ST.picking){
+        if (ST.picked[it.id]) delete ST.picked[it.id]; else ST.picked[it.id] = 1;
+        render();
+        return;
+      }
+      openEditor(it);
     };
   });
-  $("#lAdd").onclick = function(){ openEditor(null); };
+  var lAdd = $("#lAdd");   /* まとめて選んでいる間は出していない */
+  if (lAdd) lAdd.onclick = function(){ openEditor(null); };
   $("#lBoxes").onclick = openBoxes;
   $("#lCsv").onclick = pickCsv;
   $("#lJson").onclick = pickJson;
   $("#lExp").onclick = exportJson;
+}
+
+function pickedCount(){ return Object.keys(ST.picked).length; }
+
+/* 選んだぶんをまとめて 1 つのボックスへ移す。
+   その場で新しいボックスも作れるようにしておく。未分類に溜まったものを
+   分けたいときに、いちいち先に作りに行かせるのは面倒なので。 */
+function openMoveSheet(){
+  var n = pickedCount();
+  if (!n){ toast("先に項目を選んでください"); return; }
+  openSheet(
+    "<h2>" + n + " 件をどこへ移しますか</h2>" +
+    '<div class="fld"><label>いまあるボックス</label>' +
+      '<select id="mvTo">' +
+        '<option value="">未分類にする</option>' +
+        sortBoxes().map(function(b){
+          return '<option value="' + esc(b.id) + '">' + esc(b.name) + "</option>";
+        }).join("") +
+      "</select></div>" +
+    '<div class="fld"><label>または、新しく作って入れる</label>' +
+      '<input id="mvNew" type="text" placeholder="ボックスの名前"></div>' +
+    '<div class="sheet-btns">' +
+      '<button class="b-sec" id="mvCancel">やめる</button>' +
+      '<button class="b-pri" id="mvGo">移す</button>' +
+    "</div>"
+  );
+  $("#mvCancel").onclick = closeSheet;
+  $("#mvGo").onclick = function(){
+    var nm = trim($("#mvNew").value);
+    var toId = $("#mvTo").value || null;
+
+    if (nm){
+      var exist = null;
+      ST.boxes.forEach(function(b){ if (b.name === nm) exist = b; });
+      if (exist){ toId = exist.id; }
+      else {
+        var nb = newBox(nm, nextColor(), nextOrder());
+        ST.boxes.push(nb); sortBoxes();
+        DB.put("boxes", nb).catch(function(){});
+        toId = nb.id;
+      }
+    }
+
+    var moved = [];
+    ST.items.forEach(function(it){
+      if (!ST.picked[it.id]) return;
+      if (it.boxId === toId) return;
+      it.boxId = toId;
+      moved.push(it);
+    });
+    if (!moved.length){ closeSheet(); toast("もうそのボックスに入っています"); return; }
+
+    DB.putAll("items", moved).then(function(){
+      ST.picking = false; ST.picked = {};
+      closeSheet(); render(); scheduleSync();
+      var to = toId ? (boxById(toId) || {}).name : "未分類";
+      toast(moved.length + " 件を「" + to + "」へ移しました");
+    }).catch(function(){ toast("移せませんでした"); });
+  };
 }
 
 /* ==========================================================================
