@@ -420,8 +420,18 @@ var DB = (function(){
         if (!db.objectStoreNames.contains("meta"))  db.createObjectStore("meta",  {keyPath:"k"});
         if (!db.objectStoreNames.contains("boxes")) db.createObjectStore("boxes", {keyPath:"id"});
       };
-      r.onsuccess = function(){ res(r.result); };
+      r.onsuccess = function(){
+        /* あとから別のタブが version を上げようとしたら、こちらは道を空ける */
+        r.result.onversionchange = function(){ try{ r.result.close(); }catch(e){} };
+        res(r.result);
+      };
       r.onerror = function(){ rej(r.error); };
+      /* 古い版を掴んだタブが残っていると、upgrade は止まったまま
+         onsuccess も onerror も来ない。放っておくと約束が永久に決まらず、
+         画面が真っ白のまま何も出ない。理由を出して止める */
+      r.onblocked = function(){
+        rej(new Error("BLOCKED"));
+      };
     });
     return p;
   }
@@ -594,6 +604,21 @@ function recordBoxTomb(id){
    済んだ印は meta の boxMigrated に立てる。印を立てる前に落ちても、
    boxId を入れ終わった項目は次の回で素通りするので、2 回走っても同じ結果になる。
    書けなかったときは印を立てずに次の起動へ回す。項目そのものは消さない。 */
+/* sourceApp から行き先を決める。無ければボックスを作る。
+   移行と、同期で届いた振り分け前の項目の両方から使う。 */
+function boxIdForSource(sourceApp){
+  var src = trim(sourceApp);
+  if (SOURCE_BOXES.indexOf(src) < 0) return null;
+  var bx = null;
+  ST.boxes.forEach(function(b){ if (b.name === src) bx = b; });
+  if (!bx){
+    bx = newBox(src, nextColor(), nextOrder());
+    ST.boxes.push(bx); sortBoxes();
+    DB.put("boxes", bx).catch(function(){});
+  }
+  return bx.id;
+}
+
 function migrateBoxes(){
   return DB.get("meta", "boxMigrated").then(function(rec){
     if (rec && rec.v) return null;
@@ -1246,6 +1271,12 @@ function openBoxEdit(box){
   $("#bSave").onclick = function(){
     var nm = trim($("#bName").value);
     if (!nm){ toast("名前を入れてください"); return; }
+    /* 同じ名前が 2 つあると、取り込みの行き先が名前で決まらなくなる */
+    var clash = false;
+    ST.boxes.forEach(function(b){
+      if (b.name === nm && (isNew || b.id !== box.id)) clash = true;
+    });
+    if (clash){ toast("その名前のボックスはもうあります"); return; }
     if (isNew){
       var nb = newBox(nm, chosen, nextOrder());
       ST.boxes.push(nb); sortBoxes();
@@ -1756,11 +1787,39 @@ function mergeRemote(rem){
     if (!ST.days[d] || ST.days[d] < n){ ST.days[d] = n; changed++; }
   });
 
+  /* 2 台がそれぞれ手元で移行すると、同じ「My Dictionary」でも id が違う
+     ボックスが 2 つできる。id で突き合わせる限り両方残ってしまうので、
+     ここで名前を鍵にして 1 つに寄せる。古いほう（createdAt が早いほう、
+     同着なら id が小さいほう）を残し、指している項目を付け替える。 */
+  var byName = {};
+  ST.boxes.forEach(function(b){
+    var key = trim(b.name);
+    var keep = byName[key];
+    if (!keep){ byName[key] = b; return; }
+    var older = ((b.createdAt || "") < (keep.createdAt || "")) ||
+                ((b.createdAt || "") === (keep.createdAt || "") && b.id < keep.id) ? b : keep;
+    var gone  = (older === b) ? keep : b;
+    byName[key] = older;
+    ST.items.forEach(function(it){ if (it.boxId === gone.id){ it.boxId = older.id; changed++; } });
+    ST.boxTombs[gone.id] = Date.now();      /* 相手にも「寄せた」と伝わるように */
+    DB.del("boxes", gone.id).catch(function(){});
+    changed++;
+  });
+  var mergedBoxes = Object.keys(byName).map(function(k){ return byName[k]; });
+  if (mergedBoxes.length !== ST.boxes.length){ ST.boxes = mergedBoxes; sortBoxes(); }
+
   /* 消えたボックスを指している項目は未分類に倒す。宙ぶらりんにしない */
   var alive = {};
   ST.boxes.forEach(function(b){ alive[b.id] = 1; });
   ST.items.forEach(function(it){
-    if (it.boxId === undefined) it.boxId = null;
+    /* 移行前の端末から届いた項目は boxId を持っていない。ここで問答無用に
+       未分類へ落とすと、こちらの移行はもう済んでいて二度と走らないので、
+       My Dictionary の項目が永久に未分類のまま取り残される。
+       移行と同じ振り分けをかけてから倒す。 */
+    if (it.boxId === undefined){
+      it.boxId = boxIdForSource(it.sourceApp);
+      changed++;
+    }
     if (it.boxId && !alive[it.boxId]){ it.boxId = null; changed++; }
   });
 
@@ -2012,11 +2071,19 @@ loadAll().then(function(){
   render();
   paintSyncBtn("");
   if (syncAuto() && syncReady()) return trySync(true);
-}).catch(function(){
+}).catch(function(err){
+  var blocked = err && err.message === "BLOCKED";
   $("#main").innerHTML = '<div class="empty"><div class="big">⚠</div>' +
-    "<h3>保存領域を開けませんでした</h3>" +
-    "<p>プライベートブラウズだと使えないことがあります。<br>" +
-    "ふつうのタブで開き直してください。</p></div>";
+    "<h3>" + (blocked ? "古い画面が開いたままです" : "保存領域を開けませんでした") + "</h3>" +
+    "<p>" + (blocked
+      ? "このアプリを開いている別のタブか、ホーム画面のアプリが残っています。<br>" +
+        "そちらを全部閉じてから、開き直してください。<br>" +
+        "<b>中身は無事です。</b>消えてはいません。"
+      : "プライベートブラウズだと使えないことがあります。<br>" +
+        "ふつうのタブで開き直してください。") + "</p></div>" +
+    '<button class="btn" id="reOpen" style="max-width:280px;margin:0 auto">開き直す</button>';
+  var ro = $("#reOpen");
+  if (ro) ro.onclick = function(){ location.reload(); };
 });
 
 /* 新しい版が出ていたら、次に開いたときに入れ替わるようにしておく */
