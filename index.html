@@ -241,7 +241,7 @@ h2.sec{font-size:13px;color:var(--dim);margin:22px 0 9px;font-weight:700}
    外のライブラリは使わない。保存は IndexedDB。パスは全部相対。
    ========================================================================== */
 
-var APP_VERSION = "v1.7 (2026-09-05)";
+var APP_VERSION = "v1.8 (2026-09-05)";
 
 /* ---------- 小道具 ---------- */
 var $ = function(s){ return document.querySelector(s); };
@@ -1823,6 +1823,27 @@ function gh(url, method, body){
     });
 }
 
+/* 2 台目に同期を入れるとき、トークンは password 欄なので読み出せず、
+   Gist ID だけ写しても始められない。両方をひとかたまりの文字にして、
+   コピーと貼り付けだけで引き継げるようにする。 */
+function makeSetupCode(){
+  var j = JSON.stringify({ t: syncToken(), g: syncGist() });
+  try{
+    return "fq1." + btoa(unescape(encodeURIComponent(j))).replace(/=+$/, "");
+  }catch(e){ return ""; }
+}
+function readSetupCode(code){
+  var c = trim(code);
+  if (c.indexOf("fq1.") !== 0) return null;
+  try{
+    var b = c.slice(4).replace(/\s+/g, "");
+    while (b.length % 4) b += "=";
+    var o = JSON.parse(decodeURIComponent(escape(atob(b))));
+    if (!o || !o.t || !o.g) return null;
+    return { token: String(o.t), gist: String(o.g) };
+  }catch(e){ return null; }
+}
+
 function localPayload(){
   return { app:"fukushu-queue", v:1, at:new Date().toISOString(),
            items:ST.items, boxes:ST.boxes, days:ST.days,
@@ -2060,6 +2081,20 @@ function paintSyncBtn(state){
   el.dataset.busy = state === "busy" ? "1" : "";
   el.dataset.warn = state === "warn" ? "1" : "";
 }
+/* クリップボードが使えない環境用。選んで写せる形で出す */
+function showSetupCode(code){
+  openSheet(
+    "<h2>設定の引き継ぎ</h2>" +
+    '<div class="note-box">この文字をもう 1 台の「貼り付けて設定」に入れてください。</div>' +
+    '<div class="fld"><textarea id="scOut" readonly style="min-height:96px">' +
+      esc(code) + "</textarea></div>" +
+    '<div class="sheet-btns"><button class="b-pri" id="scBack">戻る</button></div>'
+  );
+  var t = $("#scOut");
+  t.onclick = function(){ t.select(); };
+  t.select();
+  $("#scBack").onclick = openCfg;
+}
 function fmtStamp(ts){
   if (!ts) return "";
   var d = new Date(+ts), p = function(n){ return (n < 10 ? "0" : "") + n; };
@@ -2105,7 +2140,9 @@ function openCfg(){
       "トークンは github.com/settings/tokens →「Generate new token (classic)」で、" +
       "スコープは <b>gist だけ</b>にチェックして作ります。リポジトリには触れません。" +
     "</div>" +
-    '<div class="fld"><label>GitHub トークン</label>' +
+    '<div class="fld"><label>GitHub トークン' +
+      '<button id="cEye" style="float:right;font-size:11.5px;color:var(--acc)">見せる</button>' +
+      "</label>" +
       '<input id="cToken" type="password" placeholder="ghp_…" autocomplete="off" ' +
       'spellcheck="false" value="' + esc(syncToken()) + '"></div>' +
     '<div class="fld"><label>Gist ID（空なら下の「Gist を作る」で作れます）</label>' +
@@ -2120,6 +2157,17 @@ function openCfg(){
     '<div class="sheet-btns">' +
       '<button class="b-sec" id="cSyncNow">いま同期する</button>' +
       '<button class="b-sec" id="cGistNew">Gist を作る</button>' +
+    "</div>" +
+
+    '<div class="note-box" style="margin-top:14px">' +
+      "<b>もう 1 台に入れるとき。</b>設定済みの端末で「設定をコピー」を押し、" +
+      "出てきた文字をもう 1 台の「貼り付けて設定」に入れてください。" +
+      "トークンと Gist ID がまとめて移ります。" +
+    "</div>" +
+    '<div class="sheet-btns">' +
+      '<button class="b-sec" id="cCopySetup"' + (syncReady() ? "" : " disabled") +
+        ">設定をコピー</button>" +
+      '<button class="b-sec" id="cPasteSetup">貼り付けて設定</button>' +
     "</div>" +
 
     '<h2 class="sec" style="margin-top:22px">データ</h2>' +
@@ -2168,6 +2216,41 @@ function openCfg(){
   $("#cAuto").onchange  = function(){
     saveSync();
     if (syncAuto() && syncReady()) trySync(false);
+  };
+  $("#cEye").onclick = function(){
+    var el = $("#cToken");
+    var hide = el.type === "password";
+    el.type = hide ? "text" : "password";
+    $("#cEye").textContent = hide ? "隠す" : "見せる";
+  };
+  $("#cCopySetup").onclick = function(){
+    var code = makeSetupCode();
+    if (!code){ toast("先にトークンと Gist ID を入れてください"); return; }
+    var done = function(){ toast("コピーしました。もう 1 台で「貼り付けて設定」へ"); };
+    if (navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(code).then(done, function(){ showSetupCode(code); });
+    } else { showSetupCode(code); }
+  };
+  $("#cPasteSetup").onclick = function(){
+    openSheet(
+      "<h2>貼り付けて設定</h2>" +
+      '<div class="note-box">設定済みの端末で「設定をコピー」して出てきた ' +
+        "<b>fq1.…</b> で始まる文字を貼ってください。</div>" +
+      '<div class="fld"><textarea id="psIn" placeholder="fq1.…"></textarea></div>' +
+      '<div class="sheet-btns">' +
+        '<button class="b-sec" id="psCancel">やめる</button>' +
+        '<button class="b-pri" id="psGo">この設定にする</button>' +
+      "</div>"
+    );
+    $("#psCancel").onclick = openCfg;
+    $("#psGo").onclick = function(){
+      var r = readSetupCode($("#psIn").value);
+      if (!r){ toast("読めませんでした。fq1. から始まる文字を貼ってください"); return; }
+      lsSet(SY.TOKEN, r.token); lsSet(SY.GIST, r.gist); lsSet(SY.AUTO, "1");
+      paintSyncBtn("");
+      toast("設定しました。同期します");
+      trySync(false).then(function(){ openCfg(); });
+    };
   };
   $("#cSyncNow").onclick = function(){ saveSync(); trySync(false).then(function(){ openCfg(); }); };
   $("#cGistNew").onclick = function(){
