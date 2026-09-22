@@ -113,6 +113,9 @@ h2.sec{font-size:13px;color:var(--dim);margin:22px 0 9px;font-weight:700}
 .ans .sub{font-size:17px;color:var(--dim);margin-top:7px;word-break:break-word}
 .ans .note{font-size:13px;color:var(--dim);margin-top:11px;padding:9px 11px;
            background:var(--panel2);border-radius:10px;text-align:left;line-height:1.6}
+.ahead-tag{display:inline-block;margin-bottom:11px;padding:4px 10px;border-radius:999px;
+           font-size:11px;font-weight:700;color:var(--cool);
+           background:rgba(0,194,255,.10);border:1px solid rgba(0,194,255,.35)}
 .grades4{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin-top:16px}
 .grades4 button{padding:14px 2px;border-radius:12px;font-size:12.5px;font-weight:800;
                 background:var(--panel2);border:1px solid var(--line);line-height:1.3}
@@ -250,7 +253,7 @@ h2.sec{font-size:13px;color:var(--dim);margin:22px 0 9px;font-weight:700}
    外のライブラリは使わない。保存は IndexedDB。パスは全部相対。
    ========================================================================== */
 
-var APP_VERSION = "v2.0 (2026-09-22)";
+var APP_VERSION = "v2.1 (2026-09-22)";
 
 /* ---------- 小道具 ---------- */
 var $ = function(s){ return document.querySelector(s); };
@@ -514,6 +517,28 @@ function dueIn(filter){
   var t = today();
   return itemsIn(filter).filter(function(it){ return (it.nextDue || t) <= t; });
 }
+/* 先取りの対象。まだ出番が来ていないもののうち、出番が近い順。
+
+   正しさのために外すものが 2 つある。
+   ・今日すでに採点したもの … 同じ日に 2 度やると短期の式に入り、
+     1 日のうちに間隔が伸びてしまう。先取りでそれをやる理由が無い。
+   ・今日出番のもの … それは先取りではなく普通の復習。呼ぶ側が先に済ませる。
+
+   出番が近い順にするのは、そこが一番「取りこぼしかけ」で、
+   先取りしても無駄になりにくいから。ずっと先のものを引っぱっても、
+   まだ十分に覚えているので伸びが小さい。 */
+/* 先取りできるものがあるか（ホームのボタンの出しわけに使う） */
+function canAhead(){ return CFG.ahead && aheadPool(ST.boxFilter).length > 0; }
+function aheadPool(filter){
+  var t = today();
+  return itemsIn(filter).filter(function(it){
+    if (!it.nextDue || it.nextDue <= t) return false;      /* 今日のぶんは対象外 */
+    if (it.lastReviewedAt && elapsedDays(it) === 0) return false;  /* 今日もうやった */
+    return true;
+  }).sort(function(a, b){
+    return a.nextDue < b.nextDue ? -1 : (a.nextDue > b.nextDue ? 1 : 0);
+  });
+}
 function filterLabel(f){
   if (f === "none") return "未分類";
   var b = boxById(f);
@@ -591,7 +616,9 @@ var DB = (function(){
    設定
    ========================================================================== */
 var DEFAULTS = { limitMin: 15, rate: 1.0, mode: "ja2en", jaVoice: "", enVoice: "",
-                 boxFilter: "all", retention: 0.9 };   // 目標保持率。次回はここを下回る日
+                 boxFilter: "all", retention: 0.9,   // 目標保持率。次回はここを下回る日
+                 ahead: true,        // 今日のぶんが尽きたら、出番の近いものを先取りする
+                 speak: "qa" };      // 自動読み上げ: off / q（問題だけ）/ qa（問題と答え）
 var CFG_KEY = "fq.settings.v1";
 var CFG = (function(){
   var c = JSON.parse(JSON.stringify(DEFAULTS));
@@ -601,6 +628,8 @@ var CFG = (function(){
       if (isFinite(raw.limitMin)) c.limitMin = Math.max(1, Math.min(180, raw.limitMin | 0));
       if (isFinite(raw.rate))     c.rate = Math.max(0.5, Math.min(2, +raw.rate));
       if (isFinite(raw.retention)) c.retention = Math.max(0.7, Math.min(0.97, +raw.retention));
+      if (typeof raw.ahead === "boolean") c.ahead = raw.ahead;
+      if (raw.speak === "off" || raw.speak === "q" || raw.speak === "qa") c.speak = raw.speak;
       if (typeof raw.mode === "string") c.mode = raw.mode;
       if (typeof raw.jaVoice === "string") c.jaVoice = raw.jaVoice;
       if (typeof raw.enVoice === "string") c.enVoice = raw.enVoice;
@@ -725,6 +754,7 @@ function logReview(item, g, before){
   var ts = Date.now();
   while (ST.reviews.length && ST.reviews[ST.reviews.length - 1].ts >= ts) ts++;  /* 鍵の衝突よけ */
   var rec = { ts: ts, id: item.id, g: g, mode: before.mode,
+              a: before.ahead ? 1 : 0,   /* 先取りぶん。あとで重みを合わせるとき区別する */
               t: before.t,            /* 前回からの日数。null は初回 */
               s0: before.s, d0: before.d,   /* 採点する前の安定度と難易度 */
               s1: item.s, d1: item.d,       /* 採点したあと */
@@ -862,9 +892,20 @@ function boxCounts(list){
 function startSession(){
   /* 選んでいるボックスのぶんだけ出す */
   var pool = shuffle(dueIn(ST.boxFilter).slice());
-  if (!pool.length){ toast("今日出すものはありません"); return; }
+  var dueCount = pool.length;
+  if (!pool.length){
+    /* 今日のぶんが無くても、先取りが入なら 1 件だけ持って始める。
+       あとは走りながら足りるぶんだけ足す */
+    if (CFG.ahead){
+      var first = aheadPool(ST.boxFilter)[0];
+      if (first) pool = [first];
+    }
+    if (!pool.length){ toast("今日出すものはありません"); return; }
+  }
   ST.ses = {
     queue: pool,
+    dueCount: dueCount,      /* ここまでが今日のぶん。これ以降は先取り */
+    ahead: dueCount ? 0 : pool.length,   /* 先取りで足した件数 */
     i: 0,
     done: 0,
     mode: ST.mode,
@@ -927,15 +968,17 @@ function reveal(){
   render();
   var it = s.queue[s.i];
   if (!it) return;
-  if (s.mode === "audio") TTS.say(it.english, "en");
-  else if (s.mode === "shadow") TTS.say(it.english, "en");
+  /* 音声のモードは、答えも音で返るのが本体なので設定に関わらず読む */
+  if (s.mode === "audio" || s.mode === "shadow") TTS.say(it.english, "en");
+  else autoSpeakAnswer();
 }
 function grade(g){
   var s = ST.ses; if (!s || s.over) return;
   var it = s.queue[s.i];
   if (!it) return;
   /* 採点する前の状態を控える。あとで曲線を引き直すための材料になる */
-  var before = { s: it.s || 0, d: it.d || 0, t: elapsedDays(it), mode: s.mode };
+  var before = { s: it.s || 0, d: it.d || 0, t: elapsedDays(it), mode: s.mode,
+                 ahead: isAhead(s.i) };
   applyGrade(it, g);
   logReview(it, g, before);
   s.done++;
@@ -947,15 +990,55 @@ function grade(g){
 
   s.i++;
   s.revealed = false;
-  if (s.i >= s.queue.length){ endSession("all"); return; }
+  if (s.i >= s.queue.length && !topUpAhead()){ endSession("all"); return; }
   render();
   autoSpeak();
 }
+
+/* 今日のぶんを全部やり終えて、まだ時間が残っているときだけ 1 件足す。
+
+   1 件ずつにしているのは、残り時間のぶんだけしか引っぱらないため。
+   まとめて積むと、時間切れで終わったときに「先取りしたのに出なかった」
+   ものが出る。出番が来ていないものを無駄に触らないほうがいい。 */
+function topUpAhead(){
+  var s = ST.ses;
+  if (!s || s.over) return false;
+  if (!CFG.ahead) return false;
+  if (s.left <= 0) return false;
+  var have = {};
+  s.queue.forEach(function(x){ have[x.id] = 1; });
+  var next = aheadPool(ST.boxFilter).filter(function(x){ return !have[x.id]; })[0];
+  if (!next) return false;
+  s.queue.push(next);
+  s.ahead++;
+  return true;
+}
+/* いま出しているものが先取りかどうか */
+function isAhead(i){
+  var s = ST.ses;
+  return !!(s && i >= s.dueCount);
+}
+/* そのモードで、問題として出ているのはどちら側か */
+function askSide(mode){
+  return (mode === "en2ja" || mode === "shadow") ? "en" : "ja";
+}
+/* 出題したら自動で読む。押さなくても鳴るように。
+   音声のモードは前から鳴っていたので、残りのモードもそろえた形。 */
 function autoSpeak(){
-  var s = ST.ses; if (!s || s.over) return;
+  var s = ST.ses; if (!s || s.over || s.revealed) return;
+  if (CFG.speak === "off") return;
   var it = s.queue[s.i]; if (!it) return;
-  if (s.mode === "audio")  TTS.say(it.japanese, "ja");
-  if (s.mode === "shadow") TTS.say(it.english, "en");
+  var side = askSide(s.mode);
+  TTS.say(side === "en" ? it.english : it.japanese, side);
+}
+/* こたえを出したら自動で読む */
+function autoSpeakAnswer(){
+  var s = ST.ses; if (!s || s.over) return;
+  if (CFG.speak !== "qa") return;
+  var it = s.queue[s.i]; if (!it) return;
+  /* 問題と反対側が答え。英作文なら、言ったあとに手本が返る */
+  var side = askSide(s.mode) === "en" ? "ja" : "en";
+  TTS.say(side === "en" ? it.english : it.japanese, side);
 }
 
 /* ==========================================================================
@@ -1070,8 +1153,13 @@ function renderHome(){
       }).join("") +
     "</div>" +
 
-    '<button class="btn" id="go" style="margin-top:18px"' + (due ? "" : " disabled") + ">" +
-      (due ? "はじめる（" + Math.min(due, 999) + " 件）" : "今日はおしまい") + "</button>" +
+    '<button class="btn" id="go" style="margin-top:18px"' +
+      ((due || canAhead()) ? "" : " disabled") + ">" +
+      (due ? "はじめる（" + Math.min(due, 999) + " 件）"
+           : (canAhead() ? "先取りではじめる" : "今日はおしまい")) + "</button>" +
+    (!due && canAhead()
+      ? '<div class="muted" style="margin-top:7px;text-align:center">' +
+        "今日の出番は片づいています。出番の近いものから前倒しで出します。</div>" : "") +
     '<div class="row" style="margin-top:10px">' +
       '<button class="btn2" id="hAdd">項目を追加</button>' +
       '<button class="btn2" id="hList">一覧を見る</button>' +
@@ -1086,7 +1174,7 @@ function renderHome(){
   Array.prototype.forEach.call(m.querySelectorAll("#limits .chip"), function(b){
     b.onclick = function(){ CFG.limitMin = +b.dataset.n; saveCfg(); render(); };
   });
-  var go = $("#go"); if (go && due) go.onclick = startSession;
+  var go = $("#go"); if (go && (due || canAhead())) go.onclick = startSession;
   $("#hAdd").onclick = function(){ openEditor(null); };
   $("#hList").onclick = function(){ ST.view = "list"; render(); };
 }
@@ -1105,15 +1193,22 @@ function renderSession(){
         "<h3>" + esc(why) + s.done + " 件</h3>" +
         "<p>" + (left
           ? "のこり " + left + " 件は明日にまわります。<br>予定はそのままなので、消えたりはしません。"
-          : "今日出すぶんは片づきました。") + "</p>" +
+          : "今日出すぶんは片づきました。") +
+          (s.ahead ? "<br><span style=\"color:var(--cool)\">うち " + s.ahead +
+                     " 件は先取りです。</span>" : "") + "</p>" +
       "</div>" +
       '<button class="btn" id="sHome">ホームへ</button>' +
-      (left ? '<button class="btn2" id="sMore" style="margin-top:9px">もう少し続ける</button>' : "");
+      ((left || canAhead()) ? '<button class="btn2" id="sMore" style="margin-top:9px">' +
+        (left ? "もう少し続ける" : "先取りで続ける") + "</button>" : "");
     $("#sHome").onclick = function(){ ST.ses = null; ST.view = "home"; render(); };
     var more = $("#sMore");
     if (more) more.onclick = function(){
       s.over = false; s.endedBy = null;
       s.left = CFG.limitMin * 60; s.limit = s.left;
+      /* 出すものが尽きて終わったときは、足せるなら足してから続ける */
+      if (s.i >= s.queue.length && !topUpAhead()){
+        s.over = true; s.endedBy = "all"; toast("もう出せるものがありません"); render(); return;
+      }
       s.timer = setInterval(tick, 1000);
       render(); autoSpeak();
     };
@@ -1124,6 +1219,11 @@ function renderSession(){
   if (!it){ endSession("all"); return; }
 
   var body = "";
+  /* 先取りのものは、そうと分かるようにしておく。
+     予定どおりの復習と混ざって見えると、進み具合を読み違える */
+  if (isAhead(s.i)){
+    body += '<div class="ahead-tag">先取り　出番は ' + esc(it.nextDue) + '</div>';
+  }
   /* 問いの面 */
   if (s.mode === "ja2en"){
     body += '<div class="q"><div class="ja">' + esc(it.japanese) + "</div>" +
@@ -2330,6 +2430,24 @@ function openCfg(){
       '<div class="muted" style="margin-top:4px">' +
         "ここを下回る日が次回になります。高くすると復習が増えて忘れにくくなり、" +
         "低くすると復習は減りますが取りこぼしが増えます。迷うなら 90%。</div></div>" +
+    '<div class="fld"><label>先取り復習</label>' +
+      '<label class="sw"><input type="checkbox" id="cAhead"' + (CFG.ahead ? " checked" : "") + ">" +
+      "<span>今日のぶんが終わったら、出番の近いものを前倒しで出す</span></label>" +
+      '<div class="muted" style="margin-top:4px">' +
+        "今日の復習を追い越すことはありません。全部やり切って、まだ時間が余っているときだけ、" +
+        "残り時間のぶんだけ足します。前倒しで正解しても予定が手前に戻ることはありません。" +
+        "ただし出番前に出すぶん、1 回あたりの伸びは小さくなります。</div></div>" +
+
+    '<div class="fld"><label>自動読み上げ</label>' +
+      '<div class="chips" id="cSpeak">' +
+        [["qa","問題と答え"],["q","問題だけ"],["off","しない"]].map(function(x){
+          return '<button class="chip' + (CFG.speak === x[0] ? " on" : "") +
+                 '" data-sp="' + x[0] + '">' + x[1] + "</button>";
+        }).join("") +
+      "</div>" +
+      '<div class="muted" style="margin-top:4px">' +
+        "出題したら押さなくても鳴ります。音声のモードは、答えは設定に関わらず鳴ります。</div></div>" +
+
     '<div class="fld"><label>読み上げの速さ　<b id="lr">' + CFG.rate.toFixed(2) + "</b> 倍</label>" +
       '<input class="rng" id="cRate" type="range" min="0.5" max="1.5" step="0.05" value="' + CFG.rate + '"></div>' +
     (TTS.ok()
@@ -2409,6 +2527,16 @@ function openCfg(){
   ret.oninput  = function(){ CFG.retention = +ret.value;
     $("#lret").textContent = Math.round(CFG.retention * 100); };
   ret.onchange = function(){ saveCfg(); render(); };
+  var ah = $("#cAhead");
+  if (ah) ah.onchange = function(){ CFG.ahead = ah.checked; saveCfg(); render(); };
+  Array.prototype.forEach.call(document.querySelectorAll("#cSpeak .chip"), function(b){
+    b.onclick = function(){
+      CFG.speak = b.dataset.sp; saveCfg();
+      Array.prototype.forEach.call(document.querySelectorAll("#cSpeak .chip"), function(o){
+        o.classList.toggle("on", o.dataset.sp === CFG.speak);
+      });
+    };
+  });
   var lim = $("#cLimit"), rate = $("#cRate");
   lim.oninput  = function(){ CFG.limitMin = +lim.value; $("#lm").textContent = CFG.limitMin; };
   lim.onchange = function(){ saveCfg(); render(); };
