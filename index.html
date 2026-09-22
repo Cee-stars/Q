@@ -113,6 +113,15 @@ h2.sec{font-size:13px;color:var(--dim);margin:22px 0 9px;font-weight:700}
 .ans .sub{font-size:17px;color:var(--dim);margin-top:7px;word-break:break-word}
 .ans .note{font-size:13px;color:var(--dim);margin-top:11px;padding:9px 11px;
            background:var(--panel2);border-radius:10px;text-align:left;line-height:1.6}
+.grades4{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin-top:16px}
+.grades4 button{padding:14px 2px;border-radius:12px;font-size:12.5px;font-weight:800;
+                background:var(--panel2);border:1px solid var(--line);line-height:1.3}
+.grades4 button small{display:block;font-size:10px;color:var(--dim);font-weight:600;margin-top:4px}
+.grades4 .g-again{color:var(--bad);border-color:rgba(230,57,70,.45)}
+.grades4 .g-hard{color:var(--warn);border-color:rgba(242,183,5,.4)}
+.grades4 .g-good{color:var(--ok);border-color:rgba(0,184,124,.45)}
+.grades4 .g-easy{color:var(--cool);border-color:rgba(0,194,255,.4)}
+.grades4 button:active{transform:scale(.96)}
 .grades{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:16px}
 .grades button{padding:16px 6px;border-radius:13px;font-size:15px;font-weight:800;
                background:var(--panel2);border:1px solid var(--line)}
@@ -241,7 +250,7 @@ h2.sec{font-size:13px;color:var(--dim);margin:22px 0 9px;font-weight:700}
    外のライブラリは使わない。保存は IndexedDB。パスは全部相対。
    ========================================================================== */
 
-var APP_VERSION = "v1.8 (2026-09-05)";
+var APP_VERSION = "v2.0 (2026-09-22)";
 
 /* ---------- 小道具 ---------- */
 var $ = function(s){ return document.querySelector(s); };
@@ -289,27 +298,127 @@ function mmss(sec){
 }
 
 /* ==========================================================================
-   間隔反復（Leitner）
+   間隔の計算（FSRS-6）
 
-   レベルが上がるほど間が開く。詰まったら 1 に戻す。
-   出すのは nextDue が今日以前のものだけ。やり残しは nextDue を触らないので、
-   翌日そのまま対象に残る＝繰り越しは何もしなくても成立する。
+   記憶を「安定度 S」と「難易度 D」の 2 つで表し、そこから忘却曲線
+       R(t) = (1 + factor * t / S) ^ decay
+   を引く。R は「いま思い出せる見込み」。目標保持率（既定 90%）を
+   下回る日を次回に充てる。
+
+   重みと式は参照実装 ts-fsrs 5.4.2（FSRS-6）から写した。記憶で書くと、
+   それらしく動いて実は違う間隔を出す、という最悪の壊れ方をするため。
    ========================================================================== */
-var BOX_DAYS = { 1:1, 2:3, 3:7, 4:14, 5:30 };
-var MAX_BOX = 5;
+var FSRS_W = [0.212, 1.2931, 2.3065, 8.2956, 6.4133, 0.8334, 3.0194, 0.001,
+              1.8722, 0.1666, 0.796, 1.4835, 0.0614, 0.2629, 1.6483, 0.6014,
+              1.8729, 0.5425, 0.0912, 0.0658, 0.1542];
+var S_MIN = 0.001, S_MAX = 36500, MAX_INTERVAL = 3650;
 
-/* 中身を触ったことを残す。ここを通さない変更は相手に届かない */
-function touchItem(it){
-  if (it) it.updatedAt = new Date().toISOString();
-  return it;
+/* 採点。FSRS の Again / Hard / Good / Easy にそのまま対応する */
+var AGAIN = 1, HARD = 2, GOOD = 3, EASY = 4;
+
+function clamp(x, lo, hi){ return x < lo ? lo : (x > hi ? hi : x); }
+function fsrsDecay(){ return -FSRS_W[20]; }
+function fsrsFactor(){ return Math.exp(Math.log(0.9) / fsrsDecay()) - 1; }
+
+/* いま思い出せる見込み。t は前回からの日数 */
+function retrievability(stability, t){
+  if (!(stability > 0)) return 0;
+  return Math.pow(1 + fsrsFactor() * t / stability, fsrsDecay());
 }
-function applyGrade(item, ok){
-  item.box = ok ? Math.min(MAX_BOX, (item.box || 1) + 1) : 1;
+/* 目標保持率まで落ちる日数 */
+function fsrsInterval(stability){
+  var r = CFG.retention;
+  var mod = (Math.pow(r, 1 / fsrsDecay()) - 1) / fsrsFactor();
+  return clamp(Math.round(stability * mod), 1, MAX_INTERVAL);
+}
+
+function initStability(g){ return Math.max(FSRS_W[g - 1], 0.1); }
+function initDifficulty(g){
+  return clamp(FSRS_W[4] - Math.exp((g - 1) * FSRS_W[5]) + 1, 1, 10);
+}
+function nextDifficulty(d, g){
+  var dd = -FSRS_W[6] * (g - 3);
+  var nd = d + dd * (10 - d) / 9;                       /* 難しいものほど動かさない */
+  var mr = FSRS_W[7] * initDifficulty(EASY) + (1 - FSRS_W[7]) * nd;  /* 平均へ寄せ戻す */
+  return clamp(mr, 1, 10);
+}
+function recallStability(d, st, r, g){
+  var hard = (g === HARD) ? FSRS_W[15] : 1;
+  var easy = (g === EASY) ? FSRS_W[16] : 1;
+  return clamp(st * (1 + Math.exp(FSRS_W[8]) * (11 - d) * Math.pow(st, -FSRS_W[9]) *
+               (Math.exp((1 - r) * FSRS_W[10]) - 1) * hard * easy), S_MIN, S_MAX);
+}
+function forgetStability(d, st, r){
+  return clamp(FSRS_W[11] * Math.pow(d, -FSRS_W[12]) *
+               (Math.pow(st + 1, FSRS_W[13]) - 1) * Math.exp((1 - r) * FSRS_W[14]),
+               S_MIN, S_MAX);
+}
+/* 同じ日にもう一度やったとき。日をまたいでいないので曲線は使えない */
+function shortTermStability(st, g){
+  var sinc = Math.pow(st, -FSRS_W[19]) * Math.exp(FSRS_W[17] * (g - 3 + FSRS_W[18]));
+  if (g >= HARD) sinc = Math.max(sinc, 1);
+  return clamp(st * sinc, S_MIN, S_MAX);
+}
+
+/* 前回からの日数。まだ一度もやっていなければ null */
+function elapsedDays(item){
+  if (!item.lastReviewedAt) return null;
+  var d = daysBetween(ymd(new Date(item.lastReviewedAt)), today());
+  return d < 0 ? 0 : d;
+}
+
+/* 採点を受けて、項目の記憶の状態と次回を更新する */
+function applyGrade(item, g){
+  g = clamp(g | 0, AGAIN, EASY);
+  var t = elapsedDays(item);
+  var first = !(item.s > 0);
+
+  if (first){
+    item.s = initStability(g);
+    item.d = initDifficulty(g);
+  } else if (t === 0){
+    /* 同じ日のやり直し。難易度だけ動かし、安定度は短期の式で */
+    item.s = shortTermStability(item.s, g);
+    item.d = nextDifficulty(item.d, g);
+  } else {
+    var r = retrievability(item.s, t);
+    item.r = r;                                  /* 直前に思い出せた見込み。画面に出す */
+    item.s = (g === AGAIN) ? forgetStability(item.d, item.s, r)
+                           : recallStability(item.d, item.s, r, g);
+    item.d = nextDifficulty(item.d, g);
+  }
+
+  item.reps = (item.reps || 0) + 1;
+  if (g === AGAIN) item.lapses = (item.lapses || 0) + 1;
+
+  var iv = fsrsInterval(item.s);
   item.lastReviewedAt = new Date().toISOString();
   item.updatedAt = item.lastReviewedAt;
-  item.nextDue = addDays(today(), BOX_DAYS[item.box]);
+  item.nextDue = addDays(today(), iv);
+  item.box = levelOf(iv);                        /* 画面に出す段階。絞り込みに使う */
   return item;
 }
+
+/* 間隔から、画面に出す 1〜5 の段階を作る。数字そのものより粗い目安 */
+function levelOf(iv){
+  if (iv <= 1) return 1;
+  if (iv <= 3) return 2;
+  if (iv <= 7) return 3;
+  if (iv <= 21) return 4;
+  return 5;
+}
+/* 採点したらどうなるかを、ボタンに出すために先読みする（本体は変えない） */
+function previewGrade(item, g){
+  var copy = {}; for (var k in item) if (item.hasOwnProperty(k)) copy[k] = item[k];
+  applyGrade(copy, g);
+  return { days: daysBetween(today(), copy.nextDue), level: copy.box };
+}
+/* いまの定着度。一度もやっていなければ null */
+function currentR(item){
+  if (!(item.s > 0) || !item.lastReviewedAt) return null;
+  return retrievability(item.s, elapsedDays(item));
+}
+
 function newItem(japanese, english, note, sourceApp, boxId){
   var now = new Date().toISOString();
   return {
@@ -430,12 +539,15 @@ var DB = (function(){
     if (p) return p;
     p = new Promise(function(res, rej){
       /* version 2 で boxes を足した。items / meta はそのまま持ち越す */
-      var r = indexedDB.open("fukushu-queue", 2);
+      var r = indexedDB.open("fukushu-queue", 3);
       r.onupgradeneeded = function(){
         var db = r.result;
         if (!db.objectStoreNames.contains("items")) db.createObjectStore("items", {keyPath:"id"});
         if (!db.objectStoreNames.contains("meta"))  db.createObjectStore("meta",  {keyPath:"k"});
         if (!db.objectStoreNames.contains("boxes")) db.createObjectStore("boxes", {keyPath:"id"});
+        /* 1 回ごとの復習の記録。忘却曲線はここからしか引けないので、
+           使うあてが今すぐ無くても貯めておく */
+        if (!db.objectStoreNames.contains("reviews")) db.createObjectStore("reviews", {keyPath:"ts"});
       };
       r.onsuccess = function(){
         /* あとから別のタブが version を上げようとしたら、こちらは道を空ける */
@@ -479,7 +591,7 @@ var DB = (function(){
    設定
    ========================================================================== */
 var DEFAULTS = { limitMin: 15, rate: 1.0, mode: "ja2en", jaVoice: "", enVoice: "",
-                 boxFilter: "all" };
+                 boxFilter: "all", retention: 0.9 };   // 目標保持率。次回はここを下回る日
 var CFG_KEY = "fq.settings.v1";
 var CFG = (function(){
   var c = JSON.parse(JSON.stringify(DEFAULTS));
@@ -488,6 +600,7 @@ var CFG = (function(){
     if (raw && typeof raw === "object"){
       if (isFinite(raw.limitMin)) c.limitMin = Math.max(1, Math.min(180, raw.limitMin | 0));
       if (isFinite(raw.rate))     c.rate = Math.max(0.5, Math.min(2, +raw.rate));
+      if (isFinite(raw.retention)) c.retention = Math.max(0.7, Math.min(0.97, +raw.retention));
       if (typeof raw.mode === "string") c.mode = raw.mode;
       if (typeof raw.jaVoice === "string") c.jaVoice = raw.jaVoice;
       if (typeof raw.enVoice === "string") c.enVoice = raw.enVoice;
@@ -572,6 +685,7 @@ var ST = {
   days: {},            // "YYYY-MM-DD" -> その日にやった件数
   tombs: {},           // 消した項目の id -> 消した時刻
   boxTombs: {},        // 消したボックスの id -> 消した時刻
+  reviews: [],         // 1 回ごとの復習の記録
   view: "home",        // home | session | list
   mode: CFG.mode,
   boxFilter: CFG.boxFilter,  // ホームのボックス絞り込み。覚えておく
@@ -585,20 +699,43 @@ var ST = {
 
 function loadAll(){
   return Promise.all([DB.all("items"), DB.get("meta", "days"), DB.get("meta", "tombs"),
-                      DB.all("boxes"), DB.get("meta", "boxTombs")])
+                      DB.all("boxes"), DB.get("meta", "boxTombs"),
+                      /* 復習の記録はあれば使う程度のもの。読めなくても
+                         アプリ全体が開かなくなるほうが困るので、ここで飲む */
+                      DB.all("reviews").catch(function(){ return []; })])
     .then(function(r){
       ST.items = (r[0] || []).filter(function(x){ return x && x.id; });
       ST.days  = (r[1] && r[1].v) || {};
       ST.tombs = (r[2] && r[2].v) || {};
       ST.boxes = (r[3] || []).filter(function(x){ return x && x.id; });
       ST.boxTombs = (r[4] && r[4].v) || {};
+      ST.reviews  = (r[5] || []).sort(function(a, b){ return a.ts - b.ts; });
       sortBoxes();
     })
     .then(migrateBoxes)
+    .then(migrateFsrs)
     .then(normalizeBoxFilter);
 }
 function saveDays(){ return DB.put("meta", { k:"days", v:ST.days }); }
 function saveTombs(){ return DB.put("meta", { k:"tombs", v:ST.tombs }); }
+
+var REVIEW_KEEP = 5000;      /* 貯めすぎない。古いものから落とす */
+/* 1 回ごとの記録。あとで曲線を引き直したり、重みを合わせ込むための材料 */
+function logReview(item, g, before){
+  var ts = Date.now();
+  while (ST.reviews.length && ST.reviews[ST.reviews.length - 1].ts >= ts) ts++;  /* 鍵の衝突よけ */
+  var rec = { ts: ts, id: item.id, g: g, mode: before.mode,
+              t: before.t,            /* 前回からの日数。null は初回 */
+              s0: before.s, d0: before.d,   /* 採点する前の安定度と難易度 */
+              s1: item.s, d1: item.d,       /* 採点したあと */
+              iv: daysBetween(today(), item.nextDue) };
+  ST.reviews.push(rec);
+  if (ST.reviews.length > REVIEW_KEEP){
+    var drop = ST.reviews.splice(0, ST.reviews.length - REVIEW_KEEP);
+    drop.forEach(function(x){ DB.del("reviews", x.ts).catch(function(){}); });
+  }
+  DB.put("reviews", rec).catch(function(){});
+}
 function saveBoxTombs(){ return DB.put("meta", { k:"boxTombs", v:ST.boxTombs }); }
 var TOMB_MAXAGE = 90 * 86400000;   // 墓標は 90 日で片づける
 function pruneTombs(map){
@@ -636,6 +773,32 @@ function boxIdForSource(sourceApp){
     DB.put("boxes", bx).catch(function(){});
   }
   return bx.id;
+}
+
+/* レベル 1〜5 で回していたものを、FSRS の状態に読み替える。
+   そのレベルの間隔（1/3/7/14/30 日）を安定度の出発点にする。
+   次回の日は動かさない。今日の予定がいきなり変わると驚くので。 */
+var OLD_BOX_DAYS = { 1:1, 2:3, 3:7, 4:14, 5:30 };
+function migrateFsrs(){
+  return DB.get("meta", "fsrsMigrated").then(function(rec){
+    if (rec && rec.v) return null;
+    var moved = [];
+    ST.items.forEach(function(it){
+      if (it.s > 0) return;                       /* もう読み替え済み */
+      var iv = OLD_BOX_DAYS[it.box || 1] || 1;
+      it.s = iv;
+      it.d = initDifficulty(GOOD);                /* 手がかりが無いので真ん中から始める */
+      it.reps = it.reps || (it.lastReviewedAt ? 1 : 0);
+      it.lapses = it.lapses || 0;
+      moved.push(it);
+    });
+    if (!moved.length) return DB.put("meta", { k:"fsrsMigrated", v:1 });
+    /* 印は書き込みが済んでから立てる。途中で落ちたら次の起動でやり直す */
+    return DB.putAll("items", moved)
+      .then(function(){ return DB.put("meta", { k:"fsrsMigrated", v:1 }); })
+      .then(function(){ return null; })
+      .catch(function(){ return null; });
+  }).catch(function(){ return null; });
 }
 
 function migrateBoxes(){
@@ -767,11 +930,14 @@ function reveal(){
   if (s.mode === "audio") TTS.say(it.english, "en");
   else if (s.mode === "shadow") TTS.say(it.english, "en");
 }
-function grade(ok){
+function grade(g){
   var s = ST.ses; if (!s || s.over) return;
   var it = s.queue[s.i];
   if (!it) return;
-  applyGrade(it, ok);
+  /* 採点する前の状態を控える。あとで曲線を引き直すための材料になる */
+  var before = { s: it.s || 0, d: it.d || 0, t: elapsedDays(it), mode: s.mode };
+  applyGrade(it, g);
+  logReview(it, g, before);
   s.done++;
   var d = today();
   ST.days[d] = (ST.days[d] || 0) + 1;
@@ -987,11 +1153,13 @@ function renderSession(){
                           '<button class="mini" id="sayJa">🔊 日本語</button>' : "") +
             "</div>" +
             "</div>" +
-            '<div class="grades">' +
-              '<button class="g-no" id="gNo">詰まった<small>レベル1にもどす</small></button>' +
-              '<button class="g-ok" id="gOk">言えた<small>レベル' +
-                Math.min(MAX_BOX, (it.box||1)+1) + " ／ " +
-                BOX_DAYS[Math.min(MAX_BOX, (it.box||1)+1)] + "日後</small></button>" +
+            '<div class="grades4">' +
+              [[AGAIN,"g-again","もう一度"],[HARD,"g-hard","むずかしい"],
+               [GOOD,"g-good","できた"],[EASY,"g-easy","かんたん"]].map(function(x){
+                var pv = previewGrade(it, x[0]);
+                return '<button class="' + x[1] + '" data-g="' + x[0] + '">' + x[2] +
+                       "<small>" + fmtDays(pv.days) + "</small></button>";
+              }).join("") +
             "</div>";
   }
 
@@ -1012,8 +1180,9 @@ function renderSession(){
     TTS.say(s.mode === "audio" ? it.japanese : it.english, s.mode === "audio" ? "ja" : "en");
   };
   var rv = $("#rev"); if (rv) rv.onclick = reveal;
-  var no = $("#gNo"); if (no) no.onclick = function(){ grade(false); };
-  var ok = $("#gOk"); if (ok) ok.onclick = function(){ grade(true); };
+  Array.prototype.forEach.call(document.querySelectorAll(".grades4 button"), function(b){
+    b.onclick = function(){ grade(+b.dataset.g); };
+  });
   var se = $("#sayEn"); if (se) se.onclick = function(){ TTS.say(it.english, "en"); };
   var sj = $("#sayJa"); if (sj) sj.onclick = function(){ TTS.say(it.japanese, "ja"); };
   $("#sQuit").onclick = function(){ endSession("quit"); };
@@ -1231,6 +1400,32 @@ function defaultBoxId(){
   return boxById(f) ? f : null;
 }
 
+/* 何日後かを、読める言い方に */
+function fmtDays(n){
+  if (n <= 0) return "今日また";
+  if (n === 1) return "明日";
+  if (n < 30) return n + "日後";
+  if (n < 365) return Math.round(n / 30) + "か月後";
+  return (n / 365).toFixed(1) + "年後";
+}
+/* この項目をいまどれくらい覚えているか。忘却曲線から引く */
+function memoryBox(item){
+  var r = currentR(item);
+  var rows = [];
+  if (r != null) rows.push(["いまの定着度", Math.round(r * 100) + " %"]);
+  if (item.s > 0) rows.push(["安定度", (+item.s).toFixed(1) + " 日"]);
+  if (item.d > 0) rows.push(["難易度", (+item.d).toFixed(1) + " / 10"]);
+  rows.push(["次に出るのは", esc(item.nextDue)]);
+  if (item.reps) rows.push(["やった回数", item.reps + " 回" +
+                            (item.lapses ? "（落とした " + item.lapses + " 回）" : "")]);
+  rows.push(["入れたのは", esc((item.createdAt || "").slice(0, 10))]);
+  return '<div class="note-box" style="margin-bottom:14px">' +
+    rows.map(function(x){
+      return '<div style="display:flex;justify-content:space-between;gap:10px">' +
+             "<span>" + x[0] + "</span><b style=\"color:var(--tx)\">" + x[1] + "</b></div>";
+    }).join("") + "</div>";
+}
+
 function openEditor(item){
   var isNew = !item;
   openSheet(
@@ -1243,14 +1438,7 @@ function openEditor(item){
       '<input id="eNote" type="text" value="' + esc(item ? item.note : "") + '"></div>' +
     '<div class="fld"><label>ボックス</label>' +
       '<select id="eBoxId">' + boxOptions(item ? item.boxId : defaultBoxId()) + "</select></div>" +
-    (isNew ? "" :
-      '<div class="fld"><label>レベル（' + BOX_DAYS[item.box || 1] + " 日ごと)</label>" +
-        '<select id="eBox">' + [1,2,3,4,5].map(function(b){
-          return '<option value="' + b + '"' + ((item.box||1) === b ? " selected" : "") +
-                 ">レベル" + b + "（" + BOX_DAYS[b] + "日後）</option>";
-        }).join("") + "</select></div>" +
-      '<div class="muted" style="margin-bottom:14px">次に出るのは ' + esc(item.nextDue) + "　" +
-        "／ 入れたのは " + esc((item.createdAt || "").slice(0, 10)) + "</div>") +
+    (isNew ? "" : memoryBox(item)) +
     '<div class="sheet-btns">' +
       '<button class="b-sec" id="eCancel">やめる</button>' +
       '<button class="b-pri" id="eSave">' + (isNew ? "追加する" : "保存する") + "</button>" +
@@ -1273,13 +1461,6 @@ function openEditor(item){
       item.japanese = ja; item.english = en; item.note = trim($("#eNote").value);
       touchItem(item);
       item.boxId = bxid;
-      var nb = +$("#eBox").value;
-      if (nb !== item.box){
-        item.box = nb;
-        item.nextDue = item.lastReviewedAt
-          ? addDays(ymd(new Date(item.lastReviewedAt)), BOX_DAYS[nb])
-          : today();
-      }
       DB.put("items", item).then(function(){
         closeSheet(); render(); toast("保存しました"); scheduleSync();
       });
@@ -1590,7 +1771,9 @@ function normalizeJson(d){
       out.push({ japanese:trim(o.japanese), english:trim(o.english), note:trim(o.note),
                  sourceApp:trim(o.sourceApp) || "json",
                  id:o.id, box:o.box, nextDue:o.nextDue, boxId:o.boxId,
-                 createdAt:o.createdAt, lastReviewedAt:o.lastReviewedAt });
+                 s:o.s, d:o.d, reps:o.reps, lapses:o.lapses,
+                 createdAt:o.createdAt, lastReviewedAt:o.lastReviewedAt,
+                 updatedAt:o.updatedAt });
     });
     /* ボックスの割り当てが入っているなら、行き先を聞かずにそのまま復元する。
        仕分けたものを書き出して読み込ませる、という渡し方ができるように。 */
@@ -1733,6 +1916,21 @@ function pickJson(){
         if (typeof o.nextDue === "string" && /^\d{4}-\d{2}-\d{2}$/.test(o.nextDue)) it.nextDue = o.nextDue;
         if (typeof o.createdAt === "string") it.createdAt = o.createdAt;
         if (typeof o.lastReviewedAt === "string") it.lastReviewedAt = o.lastReviewedAt;
+        if (typeof o.updatedAt === "string") it.updatedAt = o.updatedAt;
+        /* 覚え具合（安定度・難易度）を引き継ぐ。
+           FSRS より前に書き出したファイルには入っていないので、
+           そのときは当時のレベルから組み立て直す。捨てるよりはこちらがいい。 */
+        if (isFinite(o.s) && o.s > 0){
+          it.s = +o.s;
+          it.d = (isFinite(o.d) && o.d >= 1 && o.d <= 10) ? +o.d : initDifficulty(GOOD);
+          it.reps = (isFinite(o.reps) && o.reps >= 0) ? o.reps | 0 : 0;
+          it.lapses = (isFinite(o.lapses) && o.lapses >= 0) ? o.lapses | 0 : 0;
+        } else if (it.lastReviewedAt || isFinite(o.box)){
+          it.s = OLD_BOX_DAYS[it.box] || 1;
+          it.d = initDifficulty(GOOD);
+          it.reps = it.lastReviewedAt ? 1 : 0;
+          it.lapses = 0;
+        }
         have[it.id] = 1;
         add.push(it);
       });
@@ -1901,6 +2099,12 @@ function gistWrite(){
    採点した時刻だけで見ていると、採点していない変更（文の直し、メモ、
    ボックスの移し替え）が相手に届かない。触った時刻も見る。
    updatedAt を持たない古い項目のために、後ろ 2 つを残してある。 */
+/* 採点していない変更（文の書き換え、ボックスの移動）にも印をつける。
+   これが無いと、同期の突き合わせが「古いまま」と判断して変更を捨ててしまう。 */
+function touchItem(it){
+  if (it) it.updatedAt = new Date().toISOString();
+  return it;
+}
 function stampOf(it){
   if (!it) return "";
   var best = "";
@@ -1967,6 +2171,7 @@ function mergeRemote(rem){
     if (stampOf(o) > stampOf(mine)){
       /* 新しいほうで置き換える。中身も予定もまとめて向こうに合わせる */
       ["japanese","english","note","sourceApp","boxId","box","nextDue",
+       "s","d","reps","lapses",
        "createdAt","lastReviewedAt","updatedAt"]
         .forEach(function(k){ if (o[k] !== undefined) mine[k] = o[k]; });
       changed++;
@@ -2118,6 +2323,13 @@ function openCfg(){
     "<h2>設定</h2>" +
     '<div class="fld"><label>制限時間　<b id="lm">' + CFG.limitMin + "</b> 分</label>" +
       '<input class="rng" id="cLimit" type="range" min="1" max="60" step="1" value="' + CFG.limitMin + '"></div>' +
+    '<div class="fld"><label>目標の定着度　<b id="lret">' +
+      Math.round(CFG.retention * 100) + "</b> %</label>" +
+      '<input class="rng" id="cRet" type="range" min="0.70" max="0.97" step="0.01" value="' +
+      CFG.retention + '">' +
+      '<div class="muted" style="margin-top:4px">' +
+        "ここを下回る日が次回になります。高くすると復習が増えて忘れにくくなり、" +
+        "低くすると復習は減りますが取りこぼしが増えます。迷うなら 90%。</div></div>" +
     '<div class="fld"><label>読み上げの速さ　<b id="lr">' + CFG.rate.toFixed(2) + "</b> 倍</label>" +
       '<input class="rng" id="cRate" type="range" min="0.5" max="1.5" step="0.05" value="' + CFG.rate + '"></div>' +
     (TTS.ok()
@@ -2193,6 +2405,10 @@ function openCfg(){
       'text-decoration:underline">最新に入れ替える</button></div>'
   );
 
+  var ret = $("#cRet");
+  ret.oninput  = function(){ CFG.retention = +ret.value;
+    $("#lret").textContent = Math.round(CFG.retention * 100); };
+  ret.onchange = function(){ saveCfg(); render(); };
   var lim = $("#cLimit"), rate = $("#cRate");
   lim.oninput  = function(){ CFG.limitMin = +lim.value; $("#lm").textContent = CFG.limitMin; };
   lim.onchange = function(){ saveCfg(); render(); };
@@ -2316,10 +2532,7 @@ document.addEventListener("keydown", function(e){
     e.preventDefault();
     if (!ST.ses.revealed) reveal();
   }
-  if (ST.ses.revealed){
-    if (e.key === "1") grade(false);
-    if (e.key === "2") grade(true);
-  }
+  if (ST.ses.revealed && /^[1-4]$/.test(e.key)) grade(+e.key);
 });
 /* 画面を離れている間は読み上げを止める。戻ってきたら時計を合わせ直す */
 document.addEventListener("visibilitychange", function(){

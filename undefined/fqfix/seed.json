@@ -1,0 +1,19 @@
+[
+  {
+    "japanese": "それは想定内です。",
+    "english": "That's within expectations.",
+    "note": "",
+    "box": 3,
+    "nextDue": "2020-01-01",
+    "id": "seed-a",
+    "sourceApp": "json"
+  },
+  {
+    "japanese": "あとで折り返します。",
+    "english": "I'll get back to you later.",
+    "box": 5,
+    "nextDue": "2099-01-01",
+    "id": "seed-b",
+    "sourceApp": "json"
+  }
+]
